@@ -96,8 +96,8 @@ function getSessionFor(req) {
 function startJob(user, session) {
   const id = user.toLowerCase();
   const existing = jobs.get(id);
-  if (existing?.status === 'running') return existing;
   const isOwner = session?.name.toLowerCase() === id;
+  if (existing?.status === 'running' || (existing?.private && !isOwner)) return existing;
   const job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 }, private: isOwner };
   jobs.set(id, job);
   buildGrid(user, job, isOwner ? session.key : undefined).then(
