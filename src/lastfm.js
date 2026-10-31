@@ -22,20 +22,27 @@ export function sign(params, secret = process.env.LASTFM_SHARED_SECRET) {
   return createHash('md5').update(str + secret).digest('hex');
 }
 
+// Last.fm transient errors: 8 operation failed, 11 service offline, 16 temporarily unavailable, 29 rate limit; plus HTTP 5xx.
+const isTransient = (code) => [8, 11, 16, 29].includes(code) || code >= 500;
+const RETRIES = 4;
+
 async function call(method, params, signed = false) {
-  await throttle();
   const all = { method, ...params, api_key: process.env.LASTFM_API_KEY };
   if (signed) all.api_sig = sign(all);
   const url = new URL(API);
   url.search = new URLSearchParams({ ...all, format: 'json' });
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.error) {
-    const err = new Error(`Last.fm: ${data.message}`);
-    err.code = data.error;
-    throw err;
+  for (let attempt = 1; ; attempt++) {
+    await throttle();
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({ error: res.status, message: `HTTP ${res.status}` }));
+    if (!data.error) return data;
+    if (attempt > RETRIES || !isTransient(data.error)) {
+      const err = new Error(`Last.fm: ${data.message}`);
+      err.code = data.error;
+      throw err;
+    }
+    await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
-  return data;
 }
 
 // Exchanges a web-auth token for a session: {name, key}.
