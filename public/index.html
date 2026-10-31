@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Album Grid</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Album Grid</h1>
+    <form id="form">
+      <input id="user" name="user" placeholder="Last.fm username" autocomplete="off" required>
+      <button type="submit">Show</button>
+    </form>
+    <p id="status" role="status"></p>
+    <p id="error" role="alert"></p>
+  </header>
+  <main id="grid"></main>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
