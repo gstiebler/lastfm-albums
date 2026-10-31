@@ -28,7 +28,8 @@ async function call(method, params) {
 
 // Fetches all scrobbles newer than `from` (uts). Calls onPage(scrobbles, page, totalPages) per page.
 export async function getRecentTracks(user, from, onPage) {
-  const params = { user, limit: 200, ...(from && { from }) };
+  // Fixed `to` keeps pages stable if the user scrobbles while we paginate.
+  const params = { user, limit: 200, to: Math.floor(Date.now() / 1000), ...(from && { from }) };
   let page = 1;
   let totalPages = 1;
   do {
