@@ -1,8 +1,9 @@
 import http from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getRecentTracks, getAlbumInfo } from './lastfm.js';
+import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.js';
 import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +15,10 @@ const TYPES = {
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
 };
 
-const jobs = new Map(); // user -> {status, progress, albums, message}
+const YEAR = 365 * 24 * 3600;
+const SESSIONS_FILE = path.join(CACHE, 'sessions.json');
+
+const jobs = new Map(); // user.toLowerCase() -> {status, progress, albums, message, code, private}
 
 async function readJson(file, fallback) {
   try {
@@ -39,7 +43,7 @@ async function pool(items, limit, fn) {
   await Promise.all(Array.from({ length: limit }, worker));
 }
 
-async function buildGrid(user, job) {
+async function buildGrid(user, job, sk) {
   const userFile = path.join(CACHE, 'users', `${user.toLowerCase()}.json`);
   const state = await readJson(userFile, { lastUts: 0, plays: {} });
 
@@ -48,7 +52,7 @@ async function buildGrid(user, job) {
   await getRecentTracks(user, state.lastUts ? state.lastUts + 1 : undefined, (tracks, page, total) => {
     pending.push(...tracks);
     job.progress = { phase: 'scrobbles', done: page, total };
-  });
+  }, sk);
   aggregate(state, pending);
   await writeJson(userFile, state);
 
@@ -80,14 +84,25 @@ async function buildGrid(user, job) {
   return sortAlbums(albums);
 }
 
-function startJob(user) {
-  const existing = jobs.get(user);
+const sessions = new Map(Object.entries(await readJson(SESSIONS_FILE, {}))); // sid -> {name, key}
+const saveSessions = () => writeJson(SESSIONS_FILE, Object.fromEntries(sessions));
+
+const getSid = (req) => req.headers.cookie?.match(/(?:^|;\s*)sid=([^;]+)/)?.[1];
+function getSessionFor(req) {
+  const sid = getSid(req);
+  return sessions.get(sid);
+}
+
+function startJob(user, session) {
+  const id = user.toLowerCase();
+  const existing = jobs.get(id);
   if (existing?.status === 'running') return existing;
-  const job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 } };
-  jobs.set(user, job);
-  buildGrid(user, job).then(
+  const isOwner = session?.name.toLowerCase() === id;
+  const job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 }, private: isOwner };
+  jobs.set(id, job);
+  buildGrid(user, job, isOwner ? session.key : undefined).then(
     (albums) => Object.assign(job, { status: 'done', albums }),
-    (err) => Object.assign(job, { status: 'error', message: err.message }),
+    (err) => Object.assign(job, { status: 'error', message: err.message, code: err.code }),
   );
   return job;
 }
@@ -97,17 +112,45 @@ function send(res, code, body, type = 'application/json') {
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
 
+function redirect(res, location, headers = {}) {
+  res.writeHead(302, { Location: location, ...headers });
+  res.end();
+}
+
 async function handle(req, res) {
-  const { pathname } = new URL(req.url, 'http://localhost');
+  const { pathname, searchParams } = new URL(req.url, 'http://localhost');
+  if (pathname === '/login') {
+    const cb = `http://${req.headers.host}/callback`;
+    return redirect(res, `https://www.last.fm/api/auth/?${new URLSearchParams({ api_key: process.env.LASTFM_API_KEY, cb })}`);
+  }
+  if (pathname === '/callback') {
+    const { name, key } = await getSession(searchParams.get('token'));
+    const sid = randomUUID();
+    sessions.set(sid, { name, key });
+    await saveSessions();
+    return redirect(res, `/?user=${encodeURIComponent(name)}`, {
+      'Set-Cookie': `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${YEAR}`,
+    });
+  }
+  if (pathname === '/api/me') return send(res, 200, { name: getSessionFor(req)?.name ?? null });
+  if (pathname === '/logout' && req.method === 'POST') {
+    sessions.delete(getSid(req));
+    await saveSessions();
+    res.writeHead(204, { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
+    return res.end();
+  }
   const m = pathname.match(/^\/api\/grid\/([^/]+)$/);
   if (m) {
     const user = decodeURIComponent(m[1]);
     if (!/^[\w.-]{1,64}$/.test(user)) return send(res, 400, { status: 'error', message: 'Invalid username' });
-    if (req.method === 'POST') return send(res, 200, { status: startJob(user).status });
-    const job = jobs.get(user);
+    if (req.method === 'POST') return send(res, 200, { status: startJob(user, getSessionFor(req)).status });
+    const job = jobs.get(user.toLowerCase());
     if (!job) return send(res, 404, { status: 'error', message: 'No job for this user' });
-    const { status, progress, albums, message } = job;
-    return send(res, 200, status === 'running' ? { status, progress } : status === 'done' ? { status, albums } : { status, message });
+    if (job.private && getSessionFor(req)?.name.toLowerCase() !== user.toLowerCase()) {
+      return send(res, 403, { status: 'error', message: 'This profile is private' });
+    }
+    const { status, progress, albums, message, code } = job;
+    return send(res, 200, status === 'running' ? { status, progress } : status === 'done' ? { status, albums } : { status, message, code });
   }
   const file = path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname);
   if (!file.startsWith(PUBLIC + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');

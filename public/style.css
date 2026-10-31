@@ -23,3 +23,5 @@ button { padding: 10px 16px; border: 0; border-radius: 6px; background: var(--ac
 .meta div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .album { font-weight: 600; }
 .artist, .stats { color: var(--muted); font-size: 0.85rem; }
+#auth { margin: 0 0 12px; color: var(--muted); }
+a { color: var(--accent); }

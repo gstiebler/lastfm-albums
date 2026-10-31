@@ -3,7 +3,9 @@
 Web app: enter a Last.fm username, see a grid of album covers ranked by how completely you listened to each album.
 
 ## Source
-Last.fm only. Public scrobbles, no user login. Server holds `LASTFM_API_KEY` (from `.env`, loaded with `node --env-file=.env`). The key never reaches the browser.
+Last.fm only. Public scrobbles need no login. Server holds `LASTFM_API_KEY` and `LASTFM_SHARED_SECRET` (from `.env`, loaded with `node --env-file=.env`); they never reach the browser.
+
+Profiles that hide recent listening fail with Last.fm error 17. "Sign in with Last.fm" (web auth) lets users see their own grid: scrobble calls are then signed (`api_sig`, `sk`) with their session key.
 
 ## Ranking
 Per album (key: normalized artist + album name):
@@ -28,11 +30,14 @@ Excluded:
 - `node:http` serving `public/` static files plus:
   - `POST /api/grid/:user` — starts (or reuses running) job, returns `{status}`.
   - `GET /api/grid/:user` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message}`.
-- In-memory job map. Disk cache in `cache/` (gitignored):
+- Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, 1 year), sessions `{name, key}` persisted in `cache/sessions.json`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
+- A job started by a session whose name equals the requested user runs with that session key and is `private`: `GET` returns 403 to anyone else. Error 17 on an unsigned request reaches the UI as `code: 17` (UI shows the sign-in link).
+- In-memory job map, keyed by lowercase username. Disk cache in `cache/` (gitignored):
   - `cache/users/<user>.json` — scrobbles aggregated as `{lastUts, plays: {albumKey: {artist, album, tracks: {trackKey: {name, plays}}}}}`. On refresh, fetch only scrobbles with `from = lastUts + 1`.
   - `cache/albums.json` — `album.getInfo` results keyed by albumKey, shared across users (store misses too).
 
 ## Frontend (`public/`, vanilla HTML/CSS/JS)
+- Header: "Sign in with Last.fm" link, or "Signed in as <name> · Sign out".
 - Username input + button, progress line while running (polling every 1s).
 - Responsive grid of covers in rank order. Each tile: cover (placeholder if none), album, artist, `% · n tracks · ×full plays`. Link to the album's Last.fm page.
 - Username in URL (`?user=`) so grids are shareable.
@@ -44,4 +49,4 @@ Excluded:
 - `package.json` scripts: `start` = `node --env-file=.env src/server.js`, `test` = `node --test`.
 
 ## Non-goals
-Spotify, user login, a database, frameworks, build step.
+Spotify, a database, frameworks, build step.

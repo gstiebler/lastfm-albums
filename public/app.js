@@ -2,7 +2,8 @@ const form = document.getElementById('form');
 const input = document.getElementById('user');
 const statusEl = document.getElementById('status');
 const errorEl = document.getElementById('error');
-const grid = document.getElementById('grid');
+const authEl = document.getElementById('auth');
+const grid =document.getElementById('grid');
 let runId = 0;
 
 function el(tag, className, text) {
@@ -43,6 +44,31 @@ function progressText({ phase, done, total }) {
     : `Looking up albums: ${done}/${total}`;
 }
 
+function signInLink() {
+  const a = el('a', '', 'Sign in with Last.fm');
+  a.href = '/login';
+  return a;
+}
+
+function showError({ message, code }) {
+  errorEl.textContent = '';
+  if (code === 17) errorEl.append('This profile is private — ', signInLink());
+  else errorEl.textContent = message;
+}
+
+async function showAuth() {
+  const { name } = await (await fetch('/api/me')).json();
+  if (!name) return authEl.replaceChildren(signInLink());
+  const out = el('a', '', 'Sign out');
+  out.href = '#';
+  out.addEventListener('click', async (e) => {
+    e.preventDefault();
+    await fetch('/logout', { method: 'POST' });
+    location.reload();
+  });
+  authEl.replaceChildren(`Signed in as ${name} · `, out);
+}
+
 async function api(user, method) {
   const res = await fetch(`/api/grid/${encodeURIComponent(user)}`, { method });
   return res.json();
@@ -67,7 +93,7 @@ async function load(user) {
       return;
     } else {
       statusEl.textContent = '';
-      errorEl.textContent = data.message;
+      showError(data);
       return;
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -82,7 +108,9 @@ form.addEventListener('submit', (e) => {
   });
 });
 
-const initial = new URLSearchParams(location.search).get('user');
+showAuth();
+
+const initial =new URLSearchParams(location.search).get('user');
 if (initial) {
   input.value = initial;
   form.requestSubmit();
