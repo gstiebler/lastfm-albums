@@ -26,8 +26,9 @@ Excluded:
 - Rate limit: stay ≤ 5 req/s overall.
 - Errors from Last.fm (e.g. error 6 user not found) bubble up to the UI as a message.
 
-## Server (Node, no dependencies)
-- `node:http` serving `public/` static files plus:
+## Server (Node, no runtime dependencies)
+TypeScript run directly by Node (type stripping, no build step; erasable syntax only, relative imports use `.ts`).
+- `node:http` serving the built frontend from `dist/` plus:
   - `POST /api/grid/:user` — starts (or reuses running) job, returns `{status}`.
   - `GET /api/grid/:user` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message}`.
 - Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, 1 year), sessions `{name, key}` persisted in `cache/sessions.json`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
@@ -36,17 +37,19 @@ Excluded:
   - `cache/users/<user>.json` — scrobbles aggregated as `{lastUts, plays: {albumKey: {artist, album, tracks: {trackKey: {name, plays}}}}}`. On refresh, fetch only scrobbles with `from = lastUts + 1`.
   - `cache/albums.json` — `album.getInfo` results keyed by albumKey, shared across users (store misses too).
 
-## Frontend (`public/`, vanilla HTML/CSS/JS)
+## Frontend (`web/`, Vite + React + TypeScript)
+`npm run build` emits `dist/`, served by the server. In dev, `vite` serves `web/` and proxies `/api`, `/login`, `/callback`, `/logout` to the server on :3000 (no `changeOrigin`, so the Last.fm callback URL and cookie use the vite origin).
 - Header: "Sign in with Last.fm" link, or "Signed in as <name> · Sign out".
 - Username input + button, progress line while running (polling every 1s).
 - Responsive grid of covers in rank order. Each tile: cover (placeholder if none), album, artist, `% · n tracks · ×full plays`. Link to the album's Last.fm page.
 - Username in URL (`?user=`) so grids are shareable.
 
 ## Code layout
-- `src/rank.js` — pure: normalize, aggregate scrobbles, match tracklist, compute metrics, sort. Unit tested with `node --test`.
-- `src/lastfm.js` — API client + throttle.
-- `src/server.js` — HTTP + jobs + cache.
-- `package.json` scripts: `start` = `node --env-file=.env src/server.js`, `test` = `node --test`.
+- `server/rank.ts` — pure: normalize, aggregate scrobbles, match tracklist, compute metrics, sort. Unit tested (`test/*.test.ts`, `node --test`).
+- `server/lastfm.ts` — API client + throttle.
+- `server/server.ts` — HTTP + jobs + cache.
+- `web/` — `index.html`, `src/main.tsx`, `App.tsx`, `components/` (`AlbumTile`, `AuthStatus`), `style.css`. Vite config at the root (`root: 'web'`, output `dist/`).
+- `package.json` scripts: `dev` (server + vite), `build`, `start` = `node --env-file=.env server/server.ts`, `test`, `typecheck` (root tsconfig for server/test, `web/tsconfig.json` for the frontend).
 
 ## Non-goals
-Spotify, a database, frameworks, build step.
+Spotify, a database, a build step for the server.

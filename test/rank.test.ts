@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
   needsLookup, computeAlbum, sortAlbums, MIN_DISTINCT_TRACKS,
-} from '../src/rank.js';
+} from '../server/rank.ts';
 
-const scrobble = (artist, album, name, uts, extra = {}) => ({
+const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
   artist: { '#text': artist }, album: { '#text': album }, name, date: { uts: String(uts) }, ...extra,
 });
 
@@ -59,7 +59,7 @@ test('getTracklist handles array, single object, missing', () => {
   assert.deepEqual(getTracklist(null), []);
 });
 
-const entry = (tracks) => ({
+const entry = (tracks: Record<string, number>) => ({
   artist: 'A', album: 'X',
   tracks: Object.fromEntries(Object.entries(tracks).map(([k, p]) => [k, { name: k, plays: p }])),
 });
@@ -73,18 +73,18 @@ test('needsLookup requires MIN_DISTINCT_TRACKS distinct played tracks', () => {
 test('computeAlbum: pct, length, full plays with normalized matching', () => {
   const e = entry({ a: 4, b: 2, c: 7, 'not on album': 9 });
   const r = computeAlbum(e, ['A', 'B - Remastered 2011', 'C', 'D']);
-  assert.equal(r.heard, 3);
-  assert.equal(r.length, 4);
-  assert.equal(r.pct, 0.75);
-  assert.equal(r.full, 2);
+  assert.equal(r!.heard, 3);
+  assert.equal(r!.length, 4);
+  assert.equal(r!.pct, 0.75);
+  assert.equal(r!.full, 2);
 });
 
 test('computeAlbum merges played tracks that normalize to same tracklist track', () => {
   const e = entry({ a: 1, b: 1, c: 1 });
   e.tracks.a2 = { name: 'A (Remastered)', plays: 3 };
   const r = computeAlbum(e, ['a', 'b', 'c']);
-  assert.equal(r.heard, 3);
-  assert.equal(r.length, 3);
+  assert.equal(r!.heard, 3);
+  assert.equal(r!.length, 3);
 });
 
 test('computeAlbum excludes: tracklist <=1, none, <3 distinct played', () => {

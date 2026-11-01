@@ -3,39 +3,55 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.js';
-import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.js';
+import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.ts';
+import type { Session, LastfmError } from './lastfm.ts';
+import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.ts';
+import type { AlbumPlays, AlbumResult, ScrobbleState } from './rank.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PUBLIC = path.join(ROOT, 'public');
+const DIST = path.join(ROOT, 'dist');
 const CACHE = path.join(ROOT, 'cache');
 const ALBUM_CONCURRENCY = 4;
-const TYPES = {
+const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
-  '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.png': 'image/png', '.woff2': 'font/woff2',
+  '.json': 'application/json',
+};
+
+// Album cache entry (null = Last.fm doesn't know the album).
+type AlbumCacheEntry = { tracks: string[]; image: string; url: string } | null;
+type GridAlbum = AlbumResult & { image: string; url: string };
+type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
+type Job = {
+  status: 'running' | 'done' | 'error';
+  progress: Progress;
+  albums?: GridAlbum[];
+  message?: string;
+  code?: number;
+  private: boolean;
 };
 
 const YEAR = 365 * 24 * 3600;
 const SESSIONS_FILE = path.join(CACHE, 'sessions.json');
 
-const jobs = new Map(); // user.toLowerCase() -> {status, progress, albums, message, code, private}
+const jobs = new Map<string, Job>(); // user.toLowerCase() -> {status, progress, albums, message, code, private}
 
-async function readJson(file, fallback) {
+async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await readFile(file, 'utf8'));
   } catch (err) {
-    if (err.code === 'ENOENT') return fallback;
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return fallback;
     throw err;
   }
 }
 
-async function writeJson(file, data) {
+async function writeJson(file: string, data: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(data));
 }
 
 // Run fn over items with limited concurrency.
-async function pool(items, limit, fn) {
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let i = 0;
   const worker = async () => {
     while (i < items.length) await fn(items[i++]);
@@ -43,12 +59,12 @@ async function pool(items, limit, fn) {
   await Promise.all(Array.from({ length: limit }, worker));
 }
 
-async function buildGrid(user, job, sk) {
+async function buildGrid(user: string, job: Job, sk?: string): Promise<GridAlbum[]> {
   const userFile = path.join(CACHE, 'users', `${user.toLowerCase()}.json`);
-  const state = await readJson(userFile, { lastUts: 0, plays: {} });
+  const state = await readJson<ScrobbleState>(userFile, { lastUts: 0, plays: {} });
 
   job.progress = { phase: 'scrobbles', done: 0, total: 1 };
-  const pending = [];
+  const pending: Parameters<typeof aggregate>[1] = [];
   await getRecentTracks(user, state.lastUts ? state.lastUts + 1 : undefined, (tracks, page, total) => {
     pending.push(...tracks);
     job.progress = { phase: 'scrobbles', done: page, total };
@@ -57,7 +73,7 @@ async function buildGrid(user, job, sk) {
   await writeJson(userFile, state);
 
   const albumFile = path.join(CACHE, 'albums.json');
-  const cache = await readJson(albumFile, {});
+  const cache = await readJson<Record<string, AlbumCacheEntry>>(albumFile, {});
   const entries = Object.entries(state.plays).filter(([k, e]) => needsLookup(e) && !(k in cache));
   job.progress = { phase: 'albums', done: 0, total: entries.length };
   try {
@@ -74,7 +90,7 @@ async function buildGrid(user, job, sk) {
     await writeJson(albumFile, cache);
   }
 
-  const albums = [];
+  const albums: GridAlbum[] = [];
   for (const [key, e] of Object.entries(state.plays)) {
     const info = cache[key];
     if (!info) continue;
@@ -84,47 +100,47 @@ async function buildGrid(user, job, sk) {
   return sortAlbums(albums);
 }
 
-const sessions = new Map(Object.entries(await readJson(SESSIONS_FILE, {}))); // sid -> {name, key}
+const sessions = new Map(Object.entries(await readJson<Record<string, Session>>(SESSIONS_FILE, {}))); // sid -> {name, key}
 const saveSessions = () => writeJson(SESSIONS_FILE, Object.fromEntries(sessions));
 
-const getSid = (req) => req.headers.cookie?.match(/(?:^|;\s*)sid=([^;]+)/)?.[1];
-function getSessionFor(req) {
+const getSid = (req: http.IncomingMessage) => req.headers.cookie?.match(/(?:^|;\s*)sid=([^;]+)/)?.[1];
+function getSessionFor(req: http.IncomingMessage): Session | undefined {
   const sid = getSid(req);
-  return sessions.get(sid);
+  return sid === undefined ? undefined : sessions.get(sid);
 }
 
-function startJob(user, session) {
+function startJob(user: string, session?: Session): Job {
   const id = user.toLowerCase();
   const existing = jobs.get(id);
   const isOwner = session?.name.toLowerCase() === id;
   if (existing?.status === 'running' || (existing?.private && !isOwner)) return existing;
-  const job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 }, private: isOwner };
+  const job: Job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 }, private: isOwner };
   jobs.set(id, job);
-  buildGrid(user, job, isOwner ? session.key : undefined).then(
+  buildGrid(user, job, isOwner ? session!.key : undefined).then(
     (albums) => Object.assign(job, { status: 'done', albums }),
-    (err) => Object.assign(job, { status: 'error', message: err.message, code: err.code }),
+    (err: LastfmError) => Object.assign(job, { status: 'error', message: err.message, code: err.code }),
   );
   return job;
 }
 
-function send(res, code, body, type = 'application/json') {
+function send(res: http.ServerResponse, code: number, body: unknown, type = 'application/json') {
   res.writeHead(code, { 'Content-Type': type });
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
 
-function redirect(res, location, headers = {}) {
+function redirect(res: http.ServerResponse, location: string, headers: Record<string, string> = {}): void {
   res.writeHead(302, { Location: location, ...headers });
   res.end();
 }
 
-async function handle(req, res) {
-  const { pathname, searchParams } = new URL(req.url, 'http://localhost');
+async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const { pathname, searchParams } = new URL(req.url!, 'http://localhost');
   if (pathname === '/login') {
     const cb = `http://${req.headers.host}/callback`;
-    return redirect(res, `https://www.last.fm/api/auth/?${new URLSearchParams({ api_key: process.env.LASTFM_API_KEY, cb })}`);
+    return redirect(res, `https://www.last.fm/api/auth/?${new URLSearchParams({ api_key: process.env.LASTFM_API_KEY!, cb })}`);
   }
   if (pathname === '/callback') {
-    const { name, key } = await getSession(searchParams.get('token'));
+    const { name, key } = await getSession(searchParams.get('token')!);
     const sid = randomUUID();
     sessions.set(sid, { name, key });
     await saveSessions();
@@ -134,10 +150,11 @@ async function handle(req, res) {
   }
   if (pathname === '/api/me') return send(res, 200, { name: getSessionFor(req)?.name ?? null });
   if (pathname === '/logout' && req.method === 'POST') {
-    sessions.delete(getSid(req));
+    sessions.delete(getSid(req)!);
     await saveSessions();
     res.writeHead(204, { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
-    return res.end();
+    res.end();
+    return;
   }
   const m = pathname.match(/^\/api\/grid\/([^/]+)$/);
   if (m) {
@@ -152,17 +169,18 @@ async function handle(req, res) {
     const { status, progress, albums, message, code } = job;
     return send(res, 200, status === 'running' ? { status, progress } : status === 'done' ? { status, albums } : { status, message, code });
   }
-  const file = path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname);
-  if (!file.startsWith(PUBLIC + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
+  const file = path.join(DIST, pathname === '/' ? 'index.html' : pathname);
+  if (!file.startsWith(DIST + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
   try {
     send(res, 200, await readFile(file), TYPES[path.extname(file)] ?? 'application/octet-stream');
   } catch (err) {
-    if (err.code !== 'ENOENT' && err.code !== 'EISDIR') throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'EISDIR') throw err;
     send(res, 404, 'Not found', 'text/plain');
   }
 }
 
 const port = Number(process.env.PORT) || 3000;
 http.createServer((req, res) => {
-  handle(req, res).catch((err) => send(res, 500, { status: 'error', message: err.message }));
+  handle(req, res).catch((err: Error) => send(res, 500, { status: 'error', message: err.message }));
 }).listen(port, () => console.log(`http://localhost:${port}`));
