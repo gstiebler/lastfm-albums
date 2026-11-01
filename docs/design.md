@@ -13,12 +13,14 @@ Per album (key: normalized artist + album name):
 2. **Tracklist length**, desc (longer albums first on ties).
 3. **Full plays** = play count of the least-played track among the tracklist tracks you played. Desc.
 
+Only plays within the optional date range `[from, to]` (inclusive, unix seconds) count: heard, % heard, full plays and the min-distinct rule below are all computed from in-range plays. Tracklist length and the other exclusions are unchanged.
+
 Matching played tracks to tracklist: by normalized track name (lowercase, trimmed, strip common suffixes like " - remastered 2011", " (remastered)"; keep it small).
 
 Excluded:
 - Albums whose tracklist has ≤ 1 track (singles). *(Last.fm has no album type; call: tracklist length ≤ 1 = single.)*
 - Albums with no tracklist on Last.fm (can't compute %).
-- Albums with fewer than `MIN_DISTINCT_TRACKS = 3` distinct tracks played — not looked up, to limit API calls (a heavy user has ~17k albums, most with 1 track played).
+- Albums with fewer than `MIN_DISTINCT_TRACKS = 3` distinct tracks played in range. Lookups (`needsLookup`) use all-time distinct tracks, so they don't depend on the range and the album cache stays valid; this limits API calls (a heavy user has ~17k albums, most with 1 track played).
 
 ## Last.fm API
 - `user.getRecentTracks` (`limit=200`, `page`, `from`) — full scrobble history. Skip the `@attr.nowplaying` entry. Fields: `artist['#text']`, `album['#text']`, `name`, `date.uts`.
@@ -30,11 +32,11 @@ Excluded:
 TypeScript run directly by Node (type stripping, no build step; erasable syntax only, relative imports use `.ts`).
 - `node:http` serving the built frontend from `dist/` plus:
   - `POST /api/grid/:user` — starts (or reuses running) job, returns `{status}`.
-  - `GET /api/grid/:user` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message}`.
+  - `GET /api/grid/:user?from=&to=` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message}`. `from`/`to` are optional unix seconds (inclusive); when done, the ranking is computed per request from the job's in-memory state + album cache (no Last.fm calls, no file reads). Non-numeric values → 400.
 - Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, 1 year), sessions `{name, key}` persisted in `cache/sessions.json`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
 - A job started by a session whose name equals the requested user runs with that session key and is `private`: `GET` returns 403 to anyone else. Error 17 on an unsigned request reaches the UI as `code: 17` (UI shows the sign-in link).
-- In-memory job map, keyed by lowercase username. Disk cache in `cache/` (gitignored):
-  - `cache/users/<user>.json` — scrobbles aggregated as `{lastUts, plays: {albumKey: {artist, album, tracks: {trackKey: {name, plays}}}}}`. On refresh, fetch only scrobbles with `from = lastUts + 1`.
+- In-memory job map, keyed by lowercase username; a finished job keeps its loaded `state` and album `cache`. Disk cache in `cache/` (gitignored):
+  - `cache/users/<user>.json` — scrobbles aggregated as `{version: 2, lastUts, plays: {albumKey: {artist, album, tracks: {trackKey: {name, times: [unix seconds of each play]}}}}}`. A file without `version: 2` is discarded (full refetch). On refresh, fetch only scrobbles with `from = lastUts + 1`.
   - `cache/albums.json` — `album.getInfo` results keyed by albumKey, shared across users (store misses too).
 
 ## Frontend (`web/`, Vite + React + TypeScript)
@@ -42,7 +44,8 @@ TypeScript run directly by Node (type stripping, no build step; erasable syntax 
 - Header: "Sign in with Last.fm" link, or "Signed in as <name> · Sign out".
 - Username input + button, progress line while running (polling every 1s).
 - Responsive grid of covers in rank order. Each tile: cover (placeholder if none), album, artist, `% · n tracks · ×full plays`. Link to the album's Last.fm page.
-- Username in URL (`?user=`) so grids are shareable.
+- "From" / "To" `<input type="date">` next to the username form; either may be empty. Changing them re-ranks immediately via `GET` (no Last.fm calls). Dates are converted to unix seconds in the browser's local timezone; `to` covers the whole day.
+- URL `?user=&from=YYYY-MM-DD&to=YYYY-MM-DD` (empty ones omitted), read on load, so grids are shareable.
 
 ## Code layout
 - `server/rank.ts` — pure: normalize, aggregate scrobbles, match tracklist, compute metrics, sort. Unit tested (`test/*.test.ts`, `node --test`).

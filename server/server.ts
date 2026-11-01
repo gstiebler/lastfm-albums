@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.ts';
 import type { Session, LastfmError } from './lastfm.ts';
 import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.ts';
-import type { AlbumPlays, AlbumResult, ScrobbleState } from './rank.ts';
+import type { AlbumResult, Range, ScrobbleState } from './rank.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -25,7 +25,8 @@ type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 type Job = {
   status: 'running' | 'done' | 'error';
   progress: Progress;
-  albums?: GridAlbum[];
+  state?: ScrobbleState; // loaded data kept after the job is done; GET ranks from it
+  cache?: Record<string, AlbumCacheEntry>;
   message?: string;
   code?: number;
   private: boolean;
@@ -34,7 +35,7 @@ type Job = {
 const YEAR = 365 * 24 * 3600;
 const SESSIONS_FILE = path.join(CACHE, 'sessions.json');
 
-const jobs = new Map<string, Job>(); // user.toLowerCase() -> {status, progress, albums, message, code, private}
+const jobs = new Map<string, Job>(); // user.toLowerCase() -> Job
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
@@ -59,9 +60,10 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
   await Promise.all(Array.from({ length: limit }, worker));
 }
 
-async function buildGrid(user: string, job: Job, sk?: string): Promise<GridAlbum[]> {
+async function loadData(user: string, job: Job, sk?: string): Promise<{ state: ScrobbleState; cache: Record<string, AlbumCacheEntry> }> {
   const userFile = path.join(CACHE, 'users', `${user.toLowerCase()}.json`);
-  const state = await readJson<ScrobbleState>(userFile, { lastUts: 0, plays: {} });
+  const saved = await readJson<ScrobbleState | null>(userFile, null);
+  const state: ScrobbleState = saved?.version === 2 ? saved : { version: 2, lastUts: 0, plays: {} }; // old format: refetch all
 
   job.progress = { phase: 'scrobbles', done: 0, total: 1 };
   const pending: Parameters<typeof aggregate>[1] = [];
@@ -90,11 +92,15 @@ async function buildGrid(user: string, job: Job, sk?: string): Promise<GridAlbum
     await writeJson(albumFile, cache);
   }
 
+  return { state, cache };
+}
+
+function rankGrid({ state, cache }: { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> }, range: Range): GridAlbum[] {
   const albums: GridAlbum[] = [];
   for (const [key, e] of Object.entries(state.plays)) {
     const info = cache[key];
     if (!info) continue;
-    const r = computeAlbum(e, info.tracks);
+    const r = computeAlbum(e, info.tracks, range);
     if (r) albums.push({ ...r, image: info.image, url: info.url });
   }
   return sortAlbums(albums);
@@ -116,8 +122,8 @@ function startJob(user: string, session?: Session): Job {
   if (existing?.status === 'running' || (existing?.private && !isOwner)) return existing;
   const job: Job = { status: 'running', progress: { phase: 'scrobbles', done: 0, total: 1 }, private: isOwner };
   jobs.set(id, job);
-  buildGrid(user, job, isOwner ? session!.key : undefined).then(
-    (albums) => Object.assign(job, { status: 'done', albums }),
+  loadData(user, job, isOwner ? session!.key : undefined).then(
+    (data) => Object.assign(job, { status: 'done', ...data }),
     (err: LastfmError) => Object.assign(job, { status: 'error', message: err.message, code: err.code }),
   );
   return job;
@@ -166,8 +172,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (job.private && getSessionFor(req)?.name.toLowerCase() !== user.toLowerCase()) {
       return send(res, 403, { status: 'error', message: 'This profile is private' });
     }
-    const { status, progress, albums, message, code } = job;
-    return send(res, 200, status === 'running' ? { status, progress } : status === 'done' ? { status, albums } : { status, message, code });
+    const { status, progress, message, code } = job;
+    if (status === 'running') return send(res, 200, { status, progress });
+    if (status === 'error') return send(res, 200, { status, message, code });
+    const range: Range = {};
+    for (const k of ['from', 'to'] as const) {
+      const v = searchParams.get(k);
+      if (v) range[k] = Number(v);
+      if (Number.isNaN(range[k])) return send(res, 400, { status: 'error', message: `Invalid ${k}` });
+    }
+    return send(res, 200, { status, albums: rankGrid({ state: job.state!, cache: job.cache! }, range) });
   }
   const file = path.join(DIST, pathname === '/' ? 'index.html' : pathname);
   if (!file.startsWith(DIST + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');

@@ -27,7 +27,7 @@ test('albumKey combines normalized artist and album', () => {
 });
 
 test('aggregate counts plays, skips nowplaying and empty albums, tracks lastUts', () => {
-  const state = aggregate({ lastUts: 0, plays: {} }, [
+  const state = aggregate({ version: 2, lastUts: 0, plays: {} }, [
     scrobble('A', 'X', 'one', 100),
     scrobble('A', 'X', 'One - Remastered', 200),
     scrobble('A', 'X', 'two', 150),
@@ -39,16 +39,17 @@ test('aggregate counts plays, skips nowplaying and empty albums, tracks lastUts'
   assert.deepEqual(Object.keys(state.plays), [key]);
   assert.equal(state.plays[key].artist, 'A');
   assert.equal(state.plays[key].album, 'X');
-  assert.equal(state.plays[key].tracks.one.plays, 2);
-  assert.equal(state.plays[key].tracks.two.plays, 1);
+  assert.equal(state.version, 2);
+  assert.deepEqual(state.plays[key].tracks.one.times, [100, 200]);
+  assert.deepEqual(state.plays[key].tracks.two.times, [150]);
   assert.equal(state.plays[key].tracks.live, undefined);
 });
 
 test('aggregate merges into existing state', () => {
-  const s1 = aggregate({ lastUts: 0, plays: {} }, [scrobble('A', 'X', 'one', 100)]);
+  const s1 = aggregate({ version: 2, lastUts: 0, plays: {} }, [scrobble('A', 'X', 'one', 100)]);
   const s2 = aggregate(s1, [scrobble('A', 'X', 'one', 500)]);
   assert.equal(s2.lastUts, 500);
-  assert.equal(s2.plays[albumKey('A', 'X')].tracks.one.plays, 2);
+  assert.deepEqual(s2.plays[albumKey('A', 'X')].tracks.one.times, [100, 500]);
 });
 
 test('getTracklist handles array, single object, missing', () => {
@@ -59,9 +60,11 @@ test('getTracklist handles array, single object, missing', () => {
   assert.deepEqual(getTracklist(null), []);
 });
 
-const entry = (tracks: Record<string, number>) => ({
+// tracks: name -> number of plays (all at time 100) or explicit times
+const entry = (tracks: Record<string, number | number[]>) => ({
   artist: 'A', album: 'X',
-  tracks: Object.fromEntries(Object.entries(tracks).map(([k, p]) => [k, { name: k, plays: p }])),
+  tracks: Object.fromEntries(Object.entries(tracks).map(([k, p]) =>
+    [k, { name: k, times: Array.isArray(p) ? p : Array(p).fill(100) }])),
 });
 
 test('needsLookup requires MIN_DISTINCT_TRACKS distinct played tracks', () => {
@@ -81,7 +84,7 @@ test('computeAlbum: pct, length, full plays with normalized matching', () => {
 
 test('computeAlbum merges played tracks that normalize to same tracklist track', () => {
   const e = entry({ a: 1, b: 1, c: 1 });
-  e.tracks.a2 = { name: 'A (Remastered)', plays: 3 };
+  e.tracks.a2 = { name: 'A (Remastered)', times: [100, 100, 100] };
   const r = computeAlbum(e, ['a', 'b', 'c']);
   assert.equal(r!.heard, 3);
   assert.equal(r!.length, 3);
@@ -92,6 +95,36 @@ test('computeAlbum excludes: tracklist <=1, none, <3 distinct played', () => {
   assert.equal(computeAlbum(e, ['a']), null);
   assert.equal(computeAlbum(e, []), null);
   assert.equal(computeAlbum(entry({ a: 1, b: 1 }), ['a', 'b', 'c']), null);
+});
+
+test('computeAlbum range: values', () => {
+  const e = entry({ a: [10, 20, 30], b: [20, 30], c: [30], d: [5] });
+  const r = computeAlbum(e, ['a', 'b', 'c', 'd', 'e'], { from: 15, to: 30 });
+  assert.equal(r!.heard, 3);
+  assert.equal(r!.length, 5);
+  assert.equal(r!.pct, 0.6);
+  assert.equal(r!.full, 1);
+});
+
+test('computeAlbum range: from/to inclusive, either bound optional', () => {
+  const e = entry({ a: [10, 20], b: [20], c: [20, 30] });
+  assert.equal(computeAlbum(e, ['a', 'b', 'c', 'd'], { from: 20, to: 20 })!.heard, 3);
+  assert.equal(computeAlbum(e, ['a', 'b', 'c', 'd'], { to: 19 }), null);
+  assert.equal(computeAlbum(e, ['a', 'b', 'c', 'd'], { from: 21 }), null);
+});
+
+test('computeAlbum range: min-distinct rule applies to in-range plays', () => {
+  const e = entry({ a: [10, 50], b: [10, 50], c: [10] });
+  assert.equal(computeAlbum(e, ['a', 'b', 'c'], {})!.heard, 3);
+  assert.equal(computeAlbum(e, ['a', 'b', 'c'], { from: 40 }), null);
+});
+
+test('computeAlbum: unbounded range equals no range', () => {
+  const e = entry({ a: [1, 2, 3], b: [4, 5], c: [6], x: [7] });
+  const tl = ['a', 'b', 'c', 'd'];
+  assert.deepEqual(computeAlbum(e, tl, {}), computeAlbum(e, tl));
+  assert.equal(computeAlbum(e, tl)!.full, 1);
+  assert.equal(computeAlbum(e, tl)!.heard, 3);
 });
 
 test('sortAlbums: pct desc, then length desc, then full desc', () => {

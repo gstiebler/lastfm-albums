@@ -9,15 +9,32 @@ function progressText({ phase, done, total }: Progress) {
     : `Looking up albums: ${done}/${total}`;
 }
 
-async function api(user: string, method: 'GET' | 'POST'): Promise<GridResponse> {
-  const res = await fetch(`/api/grid/${encodeURIComponent(user)}`, { method });
+// Date input value (YYYY-MM-DD) -> unix seconds in local time; `to` is the last second of that day.
+function toUts(date: string, endOfDay = false): number | undefined {
+  if (!date) return undefined;
+  const d = new Date(`${date}T00:00:00`);
+  if (endOfDay) d.setDate(d.getDate() + 1);
+  return d.getTime() / 1000 - (endOfDay ? 1 : 0);
+}
+
+async function api(user: string, method: 'GET' | 'POST', from = '', to = ''): Promise<GridResponse> {
+  const q = new URLSearchParams();
+  const f = toUts(from);
+  const t = toUts(to, true);
+  if (f !== undefined) q.set('from', String(f));
+  if (t !== undefined) q.set('to', String(t));
+  const res = await fetch(`/api/grid/${encodeURIComponent(user)}?${q}`, { method });
   return res.json();
 }
 
 export default function App() {
-  const initial = new URLSearchParams(location.search).get('user') ?? '';
+  const params = new URLSearchParams(location.search);
+  const initial = params.get('user') ?? '';
   const [input, setInput] = useState(initial);
   const [run, setRun] = useState({ user: initial, n: 0 }); // submitted username
+  const [from, setFrom] = useState(params.get('from') ?? '');
+  const [to, setTo] = useState(params.get('to') ?? '');
+  const [ready, setReady] = useState(''); // user whose job is done
   const [status, setStatus] = useState('');
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -30,8 +47,8 @@ export default function App() {
     const id = ++runId.current;
     setAlbums([]);
     setError(null);
+    setReady('');
     setStatus('Starting…');
-    history.replaceState(null, '', `?user=${encodeURIComponent(user)}`);
 
     async function load() {
       await api(user, 'POST');
@@ -41,8 +58,7 @@ export default function App() {
         if (data.status === 'running') {
           setStatus(progressText(data.progress));
         } else if (data.status === 'done') {
-          setStatus(`${data.albums.length} albums`);
-          setAlbums(data.albums);
+          setReady(user);
           return;
         } else {
           setStatus('');
@@ -60,6 +76,34 @@ export default function App() {
     return () => { runId.current++; };
   }, [run]);
 
+  // Keep the URL in sync with the inputs.
+  useEffect(() => {
+    if (!run.user) return;
+    const q = new URLSearchParams({ user: run.user });
+    if (from) q.set('from', from);
+    if (to) q.set('to', to);
+    history.replaceState(null, '', `?${q}`);
+  }, [run.user, from, to]);
+
+  // Once the job is done, (re-)rank on the server whenever the range changes.
+  useEffect(() => {
+    if (!ready) return;
+    let stale = false;
+    api(ready, 'GET', from, to).then((data) => {
+      if (stale) return;
+      if (data.status === 'done') {
+        setStatus(`${data.albums.length} albums`);
+        setAlbums(data.albums);
+      } else if (data.status === 'error') {
+        setStatus('');
+        setError(data);
+      }
+    }).catch((err: Error) => {
+      if (!stale) setError({ message: err.message });
+    });
+    return () => { stale = true; };
+  }, [ready, from, to]);
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setRun((r) => ({ user: input.trim(), n: r.n + 1 })); // n: resubmitting the same user re-runs
@@ -75,6 +119,8 @@ export default function App() {
             id="user" name="user" placeholder="Last.fm username" autoComplete="off" required
             value={input} onChange={(e) => setInput(e.target.value)}
           />
+          <label>From <input type="date" name="from" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></label>
+          <label>To <input type="date" name="to" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></label>
           <button type="submit">Show</button>
         </form>
         <p id="status" role="status">{status}</p>

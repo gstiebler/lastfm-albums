@@ -9,8 +9,8 @@ export type Scrobble = {
   '@attr'?: { nowplaying?: string };
 };
 
-export type AlbumPlays = { artist: string; album: string; tracks: Record<string, { name: string; plays: number }> };
-export type ScrobbleState = { lastUts: number; plays: Record<string, AlbumPlays> };
+export type AlbumPlays = { artist: string; album: string; tracks: Record<string, { name: string; times: number[] }> };
+export type ScrobbleState = { version: 2; lastUts: number; plays: Record<string, AlbumPlays> };
 
 // album.getInfo `album` object (only the fields we use).
 export type AlbumInfo = {
@@ -18,6 +18,9 @@ export type AlbumInfo = {
   image?: { size: string; '#text': string }[];
   tracks?: { track?: { name: string } | { name: string }[] };
 };
+
+// Inclusive unix-seconds bounds; a missing bound is unbounded.
+export type Range = { from?: number; to?: number };
 
 export type AlbumResult = {
   artist: string;
@@ -43,7 +46,7 @@ export function albumKey(artist: string, album: string): string {
   return `${normalizeName(artist)}\u0000${normalizeName(album)}`;
 }
 
-// Merge raw user.getRecentTracks entries into state {lastUts, plays}.
+// Merge raw user.getRecentTracks entries into state {version, lastUts, plays}.
 export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): ScrobbleState {
   for (const s of scrobbles) {
     if (s['@attr']?.nowplaying) continue;
@@ -52,9 +55,10 @@ export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): Scrobble
     if (!album) continue;
     const key = albumKey(artist, album);
     const entry = (state.plays[key] ??= { artist, album, tracks: {} });
-    const track = (entry.tracks[normalizeTrack(s.name)] ??= { name: s.name, plays: 0 });
-    track.plays++;
-    state.lastUts = Math.max(state.lastUts, Number(s.date!.uts));
+    const track = (entry.tracks[normalizeTrack(s.name)] ??= { name: s.name, times: [] });
+    const uts = Number(s.date!.uts);
+    track.times.push(uts);
+    state.lastUts = Math.max(state.lastUts, uts);
   }
   return state;
 }
@@ -70,16 +74,17 @@ export function needsLookup(entry: AlbumPlays): boolean {
   return Object.keys(entry.tracks).length >= MIN_DISTINCT_TRACKS;
 }
 
-// Returns {artist, album, heard, length, pct, full} or null if excluded.
-export function computeAlbum(entry: AlbumPlays, tracklist: string[]): AlbumResult | null {
-  if (!needsLookup(entry)) return null;
+// Returns {artist, album, heard, length, pct, full} or null if excluded. Counts only plays within `range`.
+export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Range = {}): AlbumResult | null {
+  const { from = -Infinity, to = Infinity } = range;
+  const inRange = Object.entries(entry.tracks)
+    .map(([tk, t]) => [normalizeTrack(tk), t.times.filter((u) => u >= from && u <= to).length] as const)
+    .filter(([, n]) => n > 0);
+  if (inRange.length < MIN_DISTINCT_TRACKS) return null;
   const keys = new Set(tracklist.map(normalizeTrack));
   if (keys.size <= 1) return null;
   const counts = new Map<string, number>();
-  for (const [tk, t] of Object.entries(entry.tracks)) {
-    const k = normalizeTrack(tk);
-    if (keys.has(k)) counts.set(k, (counts.get(k) ?? 0) + t.plays);
-  }
+  for (const [k, n] of inRange) if (keys.has(k)) counts.set(k, (counts.get(k) ?? 0) + n);
   if (counts.size === 0) return null;
   return {
     artist: entry.artist,
