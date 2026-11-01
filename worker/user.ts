@@ -8,6 +8,7 @@ import type { Env } from './env.ts';
 import type { AlbumCacheEntry } from './shared.ts';
 
 const BUDGET = 40; // Last.fm fetches per alarm; the free plan allows 50 subrequests per invocation
+const CONCURRENCY = 3; // parallel Last.fm calls; the throttle in shared/lastfm.ts still caps the request rate
 type Status = 'running' | 'done' | 'error';
 type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 type Data = { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> };
@@ -78,11 +79,12 @@ export class UserDO extends DurableObject<Env> {
     const [user, from, to, sk] = (['user', 'from', 'to', 'sk'] as const).map((k) => this.get<any>(k));
     let page = this.get<number>('page')!;
     let pages = this.get<number>('pages')!;
-    while (page <= pages && cfg.fetches! < BUDGET) {
-      const r = await getRecentTracksPage(cfg, user, page, { from, to, sk });
-      pages = r.totalPages;
-      this.sql.exec('INSERT OR REPLACE INTO pages VALUES (?, ?)', end + page, JSON.stringify(compact(r.tracks)));
-      page++;
+    while (page <= pages && cfg.fetches! + CONCURRENCY <= BUDGET) {
+      const n = page === 1 ? 1 : Math.min(CONCURRENCY, pages - page + 1); // page 1 first: it tells us totalPages
+      const rs = await Promise.all(Array.from({ length: n }, (_, i) => getRecentTracksPage(cfg, user, page + i, { from, to, sk })));
+      rs.forEach((r, i) => this.sql.exec('INSERT OR REPLACE INTO pages VALUES (?, ?)', end + page + i, JSON.stringify(compact(r.tracks))));
+      pages = rs[n - 1].totalPages;
+      page += n;
       this.set({ page, pages, progress: { phase: 'scrobbles', done: page - 1, total: pages } });
     }
     if (page <= pages) return;
@@ -97,14 +99,20 @@ export class UserDO extends DurableObject<Env> {
     const { total } = this.get<Progress>('progress')!;
     const fetched: Record<string, AlbumCacheEntry> = {};
     try {
-      for (const [key, e] of todo) {
-        if (cfg.fetches! >= BUDGET) break;
-        const info = await getAlbumInfo(cfg, e.artist, e.album);
-        fetched[key] = info && {
-          tracks: getTracklist(info),
-          image: info.image?.find((i) => i.size === 'extralarge')?.['#text'] || '',
-          url: info.url,
-        };
+      for (let i = 0; i < todo.length && cfg.fetches! + CONCURRENCY <= BUDGET; i += CONCURRENCY) {
+        const group = todo.slice(i, i + CONCURRENCY);
+        const rs = await Promise.allSettled(group.map(([, e]) => getAlbumInfo(cfg, e.artist, e.album)));
+        rs.forEach((r, j) => {
+          if (r.status !== 'fulfilled') return;
+          const info = r.value;
+          fetched[group[j][0]] = info && {
+            tracks: getTracklist(info),
+            image: info.image?.find((i) => i.size === 'extralarge')?.['#text'] || '',
+            url: info.url,
+          };
+        });
+        const bad = rs.find((r) => r.status === 'rejected');
+        if (bad) throw bad.reason; // successes are still saved in finally
       }
     } finally {
       Object.assign(cache, fetched);
