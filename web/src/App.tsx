@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import AlbumPanel from './components/AlbumPanel.tsx';
 import AlbumTile from './components/AlbumTile.tsx';
 import AuthStatus, { SignInLink } from './components/AuthStatus.tsx';
 import type { Album, GridResponse, Progress, Sort } from './types.ts';
@@ -40,6 +41,7 @@ export default function App() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
+  const [open, setOpen] = useState<Album | null>(null);
   const runId = useRef(0);
 
   // Poll the job for `user`; a change of `user` cancels the previous run.
@@ -140,8 +142,9 @@ export default function App() {
         </p>
       </header>
       <main id="grid">
-        {albums.map((a) => <AlbumTile key={a.url + a.album} a={a} sort={sort} />)}
+        {albums.map((a) => <AlbumTile key={a.key} a={a} sort={sort} onOpen={() => setOpen(a)} />)}
       </main>
+      {open && <AlbumPanel user={ready} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} />}
     </>
   );
 }

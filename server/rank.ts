@@ -105,6 +105,28 @@ export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Rang
   };
 }
 
+export type TrackResult = { name: string; plays: number; lastPlayed: number | null };
+
+// Tracklist in album order with in-range play count and last play; duplicate normalized names appear once.
+export function albumTracks(entry: AlbumPlays, tracklist: string[], range: Range = {}): TrackResult[] {
+  const { from = -Infinity, to = Infinity } = range;
+  const plays = new Map<string, number[]>();
+  for (const [tk, t] of Object.entries(entry.tracks)) {
+    const k = normalizeTrack(tk);
+    plays.set(k, [...(plays.get(k) ?? []), ...t.times.filter((u) => u >= from && u <= to)]);
+  }
+  const seen = new Set<string>();
+  const result: TrackResult[] = [];
+  for (const name of tracklist) {
+    const k = normalizeTrack(name);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const times = plays.get(k) ?? [];
+    result.push({ name, plays: times.length, lastPlayed: times.length ? Math.max(...times) : null });
+  }
+  return result;
+}
+
 export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'pct' | 'length' | 'full' | 'completedAt'>>(
   albums: T[],
   method: SortMethod = 'plays',

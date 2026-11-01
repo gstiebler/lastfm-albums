@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.ts';
 import type { Session, LastfmError } from './lastfm.ts';
-import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.ts';
+import { aggregate, getTracklist, needsLookup, computeAlbum, albumTracks, sortAlbums } from './rank.ts';
 import type { AlbumResult, Range, ScrobbleState, SortMethod } from './rank.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,7 +20,7 @@ const TYPES: Record<string, string> = {
 
 // Album cache entry (null = Last.fm doesn't know the album).
 type AlbumCacheEntry = { tracks: string[]; image: string; url: string } | null;
-type GridAlbum = AlbumResult & { image: string; url: string };
+type GridAlbum = AlbumResult & { key: string; image: string; url: string };
 type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 type Job = {
   status: 'running' | 'done' | 'error';
@@ -101,7 +101,7 @@ function rankGrid({ state, cache }: { state: ScrobbleState; cache: Record<string
     const info = cache[key];
     if (!info) continue;
     const r = computeAlbum(e, info.tracks, range);
-    if (r) albums.push({ ...r, image: info.image, url: info.url });
+    if (r) albums.push({ ...r, key, image: info.image, url: info.url });
   }
   return sortAlbums(albums, sort);
 }
@@ -162,7 +162,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     res.end();
     return;
   }
-  const m = pathname.match(/^\/api\/grid\/([^/]+)$/);
+  const m = pathname.match(/^\/api\/grid\/([^/]+)(\/album)?$/);
   if (m) {
     const user = decodeURIComponent(m[1]);
     if (!/^[\w.-]{1,64}$/.test(user)) return send(res, 400, { status: 'error', message: 'Invalid username' });
@@ -173,6 +173,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return send(res, 403, { status: 'error', message: 'This profile is private' });
     }
     const { status, progress, message, code } = job;
+    if (m[2] && status !== 'done') return send(res, 404, { status: 'error', message: 'Job not done' });
     if (status === 'running') return send(res, 200, { status, progress });
     if (status === 'error') return send(res, 200, { status, message, code });
     const range: Range = {};
@@ -180,6 +181,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const v = searchParams.get(k);
       if (v) range[k] = Number(v);
       if (Number.isNaN(range[k])) return send(res, 400, { status: 'error', message: `Invalid ${k}` });
+    }
+    if (m[2]) {
+      const key = searchParams.get('key') ?? '';
+      const entry = job.state!.plays[key];
+      const info = job.cache![key];
+      if (status !== 'done' || !entry || !info) return send(res, 404, { status: 'error', message: 'Unknown album' });
+      const album = { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range) };
+      return send(res, 200, { status: 'done', album });
     }
     const sort = searchParams.get('sort') ?? 'plays';
     if (sort !== 'plays' && sort !== 'recent') return send(res, 400, { status: 'error', message: 'Invalid sort' });

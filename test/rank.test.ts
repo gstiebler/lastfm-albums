@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, albumTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../server/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -163,4 +163,38 @@ test('sortAlbums recent: pct first, then completedAt desc, then artist/album', (
   assert.deepEqual(sortAlbums(input, 'recent').map((x) => x.album), ['new', 'tieA', 'tieB', 'old', 'low']);
   // default stays 'plays': ties on pct/length/full -> artist/album order
   assert.deepEqual(sortAlbums(input).map((x) => x.album), ['new', 'old', 'tieA', 'tieB', 'low']);
+});
+
+test('albumTracks: tracklist order, plays and lastPlayed, unplayed -> 0/null', () => {
+  const e = entry({ b: [10, 40], a: [20], x: [5] });
+  assert.deepEqual(albumTracks(e, ['A', 'B', 'C']), [
+    { name: 'A', plays: 1, lastPlayed: 20 },
+    { name: 'B', plays: 2, lastPlayed: 40 },
+    { name: 'C', plays: 0, lastPlayed: null },
+  ]);
+});
+
+test('albumTracks: matches by normalized name incl. remaster suffix', () => {
+  const e = entry({ a: [10] });
+  e.tracks.b2 = { name: 'B (Remastered)', times: [30, 50] };
+  assert.deepEqual(albumTracks(e, ['a', 'B - Remastered 2011']).map((t) => t.plays), [1, 0]);
+  e.tracks.b = { name: 'b', times: [30, 50] };
+  assert.deepEqual(albumTracks(e, ['a', 'B - Remastered 2011'])[1], { name: 'B - Remastered 2011', plays: 2, lastPlayed: 50 });
+});
+
+test('albumTracks: range filters plays inclusively', () => {
+  const e = entry({ a: [10, 20, 30], b: [5] });
+  assert.deepEqual(albumTracks(e, ['a', 'b'], { from: 20, to: 30 }), [
+    { name: 'a', plays: 2, lastPlayed: 30 },
+    { name: 'b', plays: 0, lastPlayed: null },
+  ]);
+  assert.equal(albumTracks(e, ['a'], { to: 10 })[0].lastPlayed, 10);
+});
+
+test('albumTracks: duplicate normalized names appear once (first occurrence)', () => {
+  const e = entry({ a: [10] });
+  assert.deepEqual(albumTracks(e, ['A', 'b', 'a (Remastered)']), [
+    { name: 'A', plays: 1, lastPlayed: 10 },
+    { name: 'b', plays: 0, lastPlayed: null },
+  ]);
 });

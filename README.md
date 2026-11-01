@@ -9,6 +9,8 @@ See which albums you listened to in full. Enter a Last.fm username and get a gri
 
 A date range (From / To) limits the ranking to plays within those dates. Username, dates and sort are kept in the URL, so grids can be shared.
 
+Click an album to open a details panel with its tracklist: play count and last played date per track (within the selected date range), unplayed tracks dimmed, and a link to the album on Last.fm. Close it with Esc, the × button or by clicking outside.
+
 Excluded: singles (tracklist of 1 track), albums without a tracklist on Last.fm, and albums with fewer than 3 different tracks played.
 
 ## Setup

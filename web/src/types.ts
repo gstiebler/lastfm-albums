@@ -1,4 +1,8 @@
+export type Track = { name: string; plays: number; lastPlayed: number | null };
+export type AlbumDetail = { artist: string; album: string; image: string; url: string; tracks: Track[] };
+
 export type Album = {
+  key: string;
   artist: string;
   album: string;
   heard: number;
