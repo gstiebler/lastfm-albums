@@ -5,9 +5,12 @@ export type Album = {
   length: number;
   pct: number;
   full: number;
+  completedAt: number;
   image: string;
   url: string;
 };
+
+export type Sort = 'plays' | 'recent';
 
 export type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import AlbumTile from './components/AlbumTile.tsx';
 import AuthStatus, { SignInLink } from './components/AuthStatus.tsx';
-import type { Album, GridResponse, Progress } from './types.ts';
+import type { Album, GridResponse, Progress, Sort } from './types.ts';
 
 function progressText({ phase, done, total }: Progress) {
   return phase === 'scrobbles'
@@ -17,12 +17,13 @@ function toUts(date: string, endOfDay = false): number | undefined {
   return d.getTime() / 1000 - (endOfDay ? 1 : 0);
 }
 
-async function api(user: string, method: 'GET' | 'POST', from = '', to = ''): Promise<GridResponse> {
+async function api(user: string, method: 'GET' | 'POST', from = '', to = '', sort: Sort = 'plays'): Promise<GridResponse> {
   const q = new URLSearchParams();
   const f = toUts(from);
   const t = toUts(to, true);
   if (f !== undefined) q.set('from', String(f));
   if (t !== undefined) q.set('to', String(t));
+  if (sort !== 'plays') q.set('sort', sort);
   const res = await fetch(`/api/grid/${encodeURIComponent(user)}?${q}`, { method });
   return res.json();
 }
@@ -34,6 +35,7 @@ export default function App() {
   const [run, setRun] = useState({ user: initial, n: 0 }); // submitted username
   const [from, setFrom] = useState(params.get('from') ?? '');
   const [to, setTo] = useState(params.get('to') ?? '');
+  const [sort, setSort] = useState<Sort>(params.get('sort') === 'recent' ? 'recent' : 'plays');
   const [ready, setReady] = useState(''); // user whose job is done
   const [status, setStatus] = useState('');
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
@@ -82,14 +84,15 @@ export default function App() {
     const q = new URLSearchParams({ user: run.user });
     if (from) q.set('from', from);
     if (to) q.set('to', to);
+    if (sort !== 'plays') q.set('sort', sort);
     history.replaceState(null, '', `?${q}`);
-  }, [run.user, from, to]);
+  }, [run.user, from, to, sort]);
 
   // Once the job is done, (re-)rank on the server whenever the range changes.
   useEffect(() => {
     if (!ready) return;
     let stale = false;
-    api(ready, 'GET', from, to).then((data) => {
+    api(ready, 'GET', from, to, sort).then((data) => {
       if (stale) return;
       if (data.status === 'done') {
         setStatus(`${data.albums.length} albums`);
@@ -102,7 +105,7 @@ export default function App() {
       if (!stale) setError({ message: err.message });
     });
     return () => { stale = true; };
-  }, [ready, from, to]);
+  }, [ready, from, to, sort]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -121,6 +124,12 @@ export default function App() {
           />
           <label>From <input type="date" name="from" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></label>
           <label>To <input type="date" name="to" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></label>
+          <label>Sort
+            <select name="sort" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+              <option value="plays">Most plays</option>
+              <option value="recent">Recently completed</option>
+            </select>
+          </label>
           <button type="submit">Show</button>
         </form>
         <p id="status" role="status">{status}</p>
@@ -131,7 +140,7 @@ export default function App() {
         </p>
       </header>
       <main id="grid">
-        {albums.map((a) => <AlbumTile key={a.url + a.album} a={a} />)}
+        {albums.map((a) => <AlbumTile key={a.url + a.album} a={a} sort={sort} />)}
       </main>
     </>
   );

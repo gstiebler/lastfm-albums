@@ -128,17 +128,39 @@ test('computeAlbum: unbounded range equals no range', () => {
 });
 
 test('sortAlbums: pct desc, then length desc, then full desc', () => {
-  const a = { album: 'a', artist: 'x', pct: 1, length: 10, full: 1 };
-  const b = { album: 'b', artist: 'x', pct: 1, length: 12, full: 1 };
-  const c = { album: 'c', artist: 'x', pct: 1, length: 12, full: 5 };
-  const d = { album: 'd', artist: 'x', pct: 0.5, length: 20, full: 9 };
+  const a = { album: 'a', artist: 'x', pct: 1, length: 10, full: 1, completedAt: 0 };
+  const b = { album: 'b', artist: 'x', pct: 1, length: 12, full: 1, completedAt: 0 };
+  const c = { album: 'c', artist: 'x', pct: 1, length: 12, full: 5, completedAt: 0 };
+  const d = { album: 'd', artist: 'x', pct: 0.5, length: 20, full: 9, completedAt: 0 };
   assert.deepEqual(sortAlbums([a, d, b, c]).map((x) => x.album), ['c', 'b', 'a', 'd']);
 });
 
 test('sortAlbums: full ties fall back to artist/album order and do not mutate input', () => {
-  const a = { album: 'b', artist: 'x', pct: 1, length: 5, full: 1 };
-  const b = { album: 'a', artist: 'x', pct: 1, length: 5, full: 1 };
+  const a = { album: 'b', artist: 'x', pct: 1, length: 5, full: 1, completedAt: 0 };
+  const b = { album: 'a', artist: 'x', pct: 1, length: 5, full: 1, completedAt: 0 };
   const input = [a, b];
   assert.deepEqual(sortAlbums(input).map((x) => x.album), ['a', 'b']);
   assert.equal(input[0], a);
+});
+
+test('computeAlbum completedAt: min over matched tracks of last in-range play', () => {
+  const e = entry({ a: [10, 90], b: [50, 60], c: [30, 200], x: [1] });
+  const tl = ['a', 'b', 'c', 'd'];
+  assert.equal(computeAlbum(e, tl)!.completedAt, 60); // a:90 b:60 c:200 -> 60; x unmatched
+  assert.equal(computeAlbum(e, tl, { to: 100 })!.completedAt, 30); // a:90 b:60 c:30
+  assert.equal(computeAlbum(e, tl, { from: 40, to: 100 }), null); // only a, b in range
+});
+
+test('computeAlbum completedAt: ignores out-of-range and unmatched plays', () => {
+  const e = entry({ a: [10, 20], b: [20, 25], c: [20, 300], x: [5] });
+  assert.equal(computeAlbum(e, ['a', 'b', 'c', 'd'], { from: 15, to: 100 })!.completedAt, 20);
+});
+
+test('sortAlbums recent: pct first, then completedAt desc, then artist/album', () => {
+  const al = (album: string, pct: number, completedAt: number) =>
+    ({ album, artist: 'x', pct, length: 5, full: 1, completedAt });
+  const input = [al('old', 1, 100), al('low', 0.5, 999), al('new', 1, 300), al('tieB', 1, 200), al('tieA', 1, 200)];
+  assert.deepEqual(sortAlbums(input, 'recent').map((x) => x.album), ['new', 'tieA', 'tieB', 'old', 'low']);
+  // default stays 'plays': ties on pct/length/full -> artist/album order
+  assert.deepEqual(sortAlbums(input).map((x) => x.album), ['new', 'old', 'tieA', 'tieB', 'low']);
 });

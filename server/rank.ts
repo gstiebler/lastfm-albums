@@ -29,7 +29,10 @@ export type AlbumResult = {
   length: number;
   pct: number;
   full: number;
+  completedAt: number; // unix seconds: last play of the least recently played matched track
 };
+
+export type SortMethod = 'plays' | 'recent';
 
 export function normalizeName(s: string): string {
   return String(s).trim().toLowerCase();
@@ -74,17 +77,22 @@ export function needsLookup(entry: AlbumPlays): boolean {
   return Object.keys(entry.tracks).length >= MIN_DISTINCT_TRACKS;
 }
 
-// Returns {artist, album, heard, length, pct, full} or null if excluded. Counts only plays within `range`.
+// Returns {artist, album, heard, length, pct, full, completedAt} or null if excluded. Counts only plays within `range`.
 export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Range = {}): AlbumResult | null {
   const { from = -Infinity, to = Infinity } = range;
   const inRange = Object.entries(entry.tracks)
-    .map(([tk, t]) => [normalizeTrack(tk), t.times.filter((u) => u >= from && u <= to).length] as const)
-    .filter(([, n]) => n > 0);
+    .map(([tk, t]) => [normalizeTrack(tk), t.times.filter((u) => u >= from && u <= to)] as const)
+    .filter(([, times]) => times.length > 0);
   if (inRange.length < MIN_DISTINCT_TRACKS) return null;
   const keys = new Set(tracklist.map(normalizeTrack));
   if (keys.size <= 1) return null;
   const counts = new Map<string, number>();
-  for (const [k, n] of inRange) if (keys.has(k)) counts.set(k, (counts.get(k) ?? 0) + n);
+  const last = new Map<string, number>();
+  for (const [k, times] of inRange) {
+    if (!keys.has(k)) continue;
+    counts.set(k, (counts.get(k) ?? 0) + times.length);
+    last.set(k, Math.max(last.get(k) ?? -Infinity, ...times));
+  }
   if (counts.size === 0) return null;
   return {
     artist: entry.artist,
@@ -93,11 +101,16 @@ export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Rang
     length: keys.size,
     pct: counts.size / keys.size,
     full: Math.min(...counts.values()),
+    completedAt: Math.min(...last.values()),
   };
 }
 
-export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'pct' | 'length' | 'full'>>(albums: T[]): T[] {
+export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'pct' | 'length' | 'full' | 'completedAt'>>(
+  albums: T[],
+  method: SortMethod = 'plays',
+): T[] {
   return [...albums].sort((a, b) =>
-    b.pct - a.pct || b.length - a.length || b.full - a.full ||
+    b.pct - a.pct ||
+    (method === 'recent' ? b.completedAt - a.completedAt : b.length - a.length || b.full - a.full) ||
     a.artist.localeCompare(b.artist) || a.album.localeCompare(b.album));
 }

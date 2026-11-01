@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getRecentTracks, getAlbumInfo, getSession } from './lastfm.ts';
 import type { Session, LastfmError } from './lastfm.ts';
 import { aggregate, getTracklist, needsLookup, computeAlbum, sortAlbums } from './rank.ts';
-import type { AlbumResult, Range, ScrobbleState } from './rank.ts';
+import type { AlbumResult, Range, ScrobbleState, SortMethod } from './rank.ts';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -95,7 +95,7 @@ async function loadData(user: string, job: Job, sk?: string): Promise<{ state: S
   return { state, cache };
 }
 
-function rankGrid({ state, cache }: { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> }, range: Range): GridAlbum[] {
+function rankGrid({ state, cache }: { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> }, range: Range, sort: SortMethod): GridAlbum[] {
   const albums: GridAlbum[] = [];
   for (const [key, e] of Object.entries(state.plays)) {
     const info = cache[key];
@@ -103,7 +103,7 @@ function rankGrid({ state, cache }: { state: ScrobbleState; cache: Record<string
     const r = computeAlbum(e, info.tracks, range);
     if (r) albums.push({ ...r, image: info.image, url: info.url });
   }
-  return sortAlbums(albums);
+  return sortAlbums(albums, sort);
 }
 
 const sessions = new Map(Object.entries(await readJson<Record<string, Session>>(SESSIONS_FILE, {}))); // sid -> {name, key}
@@ -181,7 +181,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (v) range[k] = Number(v);
       if (Number.isNaN(range[k])) return send(res, 400, { status: 'error', message: `Invalid ${k}` });
     }
-    return send(res, 200, { status, albums: rankGrid({ state: job.state!, cache: job.cache! }, range) });
+    const sort = searchParams.get('sort') ?? 'plays';
+    if (sort !== 'plays' && sort !== 'recent') return send(res, 400, { status: 'error', message: 'Invalid sort' });
+    return send(res, 200, { status, albums: rankGrid({ state: job.state!, cache: job.cache! }, range, sort) });
   }
   const file = path.join(DIST, pathname === '/' ? 'index.html' : pathname);
   if (!file.startsWith(DIST + path.sep)) return send(res, 403, 'Forbidden', 'text/plain');
