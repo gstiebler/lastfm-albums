@@ -66,7 +66,8 @@ export async function getRecentTracksPage(
 ): Promise<{ tracks: Scrobble[]; totalPages: number }> {
   const params = { user, limit: 200, to, page, ...(from && { from }), ...(sk && { sk }) };
   const data = await call(cfg, 'user.getRecentTracks', params, Boolean(sk));
-  return { tracks: data.recenttracks.track ?? [], totalPages: Number(data.recenttracks['@attr'].totalPages) };
+  // Last.fm returns a single object (not an array) when the page has one track.
+  return { tracks: [data.recenttracks.track ?? []].flat(), totalPages: Number(data.recenttracks['@attr'].totalPages) };
 }
 
 // Returns album.getInfo `album` object, or null when Last.fm doesn't know it (error 6).
