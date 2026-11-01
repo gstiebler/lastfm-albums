@@ -1,0 +1,165 @@
+import { DurableObject } from 'cloudflare:workers';
+import { getRecentTracksPage, getAlbumInfo } from '../shared/lastfm.ts';
+import type { Config, LastfmError, Session } from '../shared/lastfm.ts';
+import { aggregate, getTracklist, needsLookup, computeAlbum, albumTracks, sortAlbums } from '../shared/rank.ts';
+import type { AlbumResult, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
+import { shared } from './env.ts';
+import type { Env } from './env.ts';
+import type { AlbumCacheEntry } from './shared.ts';
+
+const BUDGET = 40; // Last.fm fetches per alarm; the free plan allows 50 subrequests per invocation
+type Status = 'running' | 'done' | 'error';
+type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
+type Data = { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> };
+type GridAlbum = AlbumResult & { key: string; image: string; url: string };
+type Reply = { code: number; body: Record<string, any> };
+type Compact = [artist: string, album: string, track: string, uts: number];
+
+const fail = (code: number, message: string): Reply => ({ code, body: { status: 'error', message } });
+const ok = (body: Record<string, any>): Reply => ({ code: 200, body });
+
+const compact = (tracks: Scrobble[]): Compact[] =>
+  tracks.filter((s) => !s['@attr']?.nowplaying).map((s) => [s.artist['#text'], s.album['#text'], s.name, Number(s.date!.uts)]);
+const expand = (rows: Compact[]): Scrobble[] =>
+  rows.map(([artist, album, name, uts]) => ({ artist: { '#text': artist }, album: { '#text': album }, name, date: { uts: String(uts) } }));
+
+// One instance per Last.fm user (lowercase name). Fetches in alarm chunks; ranks in memory.
+export class UserDO extends DurableObject<Env> {
+  sql = this.ctx.storage.sql;
+  data?: Data; // aggregated scrobbles + album cache; rebuilt from storage after eviction
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, data TEXT)');
+  }
+
+  private get<T>(k: string): T | undefined {
+    const row = this.sql.exec('SELECT v FROM meta WHERE k = ?', k).toArray()[0];
+    return row ? JSON.parse(row.v as string) ?? undefined : undefined;
+  }
+
+  private set(values: Record<string, unknown>): void {
+    for (const [k, v] of Object.entries(values)) this.sql.exec('INSERT OR REPLACE INTO meta VALUES (?, ?)', k, JSON.stringify(v ?? null));
+  }
+
+  async start(user: string, session: Session | null): Promise<{ status: Status | undefined }> {
+    const status = this.get<Status>('status');
+    const isOwner = session?.name.toLowerCase() === user.toLowerCase();
+    if (status === 'running' || (this.get('private') && !isOwner)) return { status };
+    const lastUts = this.get<number>('lastUts');
+    const resume = status === 'error' && this.get<Progress>('progress')?.phase === 'albums'; // scrobbles already stored
+    this.set({
+      status: 'running', message: null, code: null, user, private: isOwner, sk: isOwner ? session!.key : null,
+      ...(!resume && {
+        page: 1, pages: 1, to: Math.floor(Date.now() / 1000), from: lastUts ? lastUts + 1 : null,
+        progress: { phase: 'scrobbles', done: 0, total: 1 },
+      }),
+    });
+    if (!resume) this.data = undefined;
+    await this.ctx.storage.setAlarm(Date.now());
+    return { status: 'running' };
+  }
+
+  async alarm(): Promise<void> {
+    const cfg: Config = { apiKey: this.env.LASTFM_API_KEY, secret: this.env.LASTFM_SHARED_SECRET, fetches: 0 };
+    try {
+      if (this.get<Progress>('progress')!.phase === 'scrobbles') await this.fetchScrobbles(cfg);
+      if (this.get<Progress>('progress')!.phase === 'albums') await this.fetchAlbums(cfg);
+    } catch (err) {
+      this.set({ status: 'error', message: (err as Error).message, code: (err as LastfmError).code });
+      return;
+    }
+    if (this.get<Status>('status') === 'running') await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  private async fetchScrobbles(cfg: Config): Promise<void> {
+    const end = this.get<number>('end') ?? 0; // page ids <= end are committed; this fetch writes end + page
+    const [user, from, to, sk] = (['user', 'from', 'to', 'sk'] as const).map((k) => this.get<any>(k));
+    let page = this.get<number>('page')!;
+    let pages = this.get<number>('pages')!;
+    while (page <= pages && cfg.fetches! < BUDGET) {
+      const r = await getRecentTracksPage(cfg, user, page, { from, to, sk });
+      pages = r.totalPages;
+      this.sql.exec('INSERT OR REPLACE INTO pages VALUES (?, ?)', end + page, JSON.stringify(compact(r.tracks)));
+      page++;
+      this.set({ page, pages, progress: { phase: 'scrobbles', done: page - 1, total: pages } });
+    }
+    if (page <= pages) return;
+    this.set({ end: end + page - 1 });
+    this.data = undefined;
+    this.set({ progress: { phase: 'albums', done: 0, total: (await this.todo()).length } });
+  }
+
+  private async fetchAlbums(cfg: Config): Promise<void> {
+    const { state, cache } = await this.load();
+    const todo = await this.todo();
+    const { total } = this.get<Progress>('progress')!;
+    const fetched: Record<string, AlbumCacheEntry> = {};
+    try {
+      for (const [key, e] of todo) {
+        if (cfg.fetches! >= BUDGET) break;
+        const info = await getAlbumInfo(cfg, e.artist, e.album);
+        fetched[key] = info && {
+          tracks: getTracklist(info),
+          image: info.image?.find((i) => i.size === 'extralarge')?.['#text'] || '',
+          url: info.url,
+        };
+      }
+    } finally {
+      Object.assign(cache, fetched);
+      await shared(this.env).putAlbums(fetched);
+    }
+    const left = todo.length - Object.keys(fetched).length;
+    this.set({ progress: { phase: 'albums', done: total - left, total } });
+    if (!left) this.set({ status: 'done', lastUts: state.lastUts });
+  }
+
+  // Albums that need an album.getInfo lookup and aren't cached yet.
+  private async todo() {
+    const { state, cache } = await this.load();
+    return Object.entries(state.plays).filter(([k, e]) => needsLookup(e) && !(k in cache));
+  }
+
+  private async load(): Promise<Data> {
+    if (this.data) return this.data;
+    const state: ScrobbleState = { version: 2, lastUts: 0, plays: {} };
+    for (const row of this.sql.exec('SELECT data FROM pages WHERE id <= ? ORDER BY id', this.get<number>('end') ?? 0)) {
+      aggregate(state, expand(JSON.parse(row.data as string)));
+    }
+    const keys = Object.entries(state.plays).filter(([, e]) => needsLookup(e)).map(([k]) => k);
+    return (this.data = { state, cache: await shared(this.env).getAlbums(keys) });
+  }
+
+  // GET /api/grid/:user (album=false) or /api/grid/:user/album (album=true).
+  async read(session: Session | null, album: boolean, q: { key: string | null; from: string | null; to: string | null; sort: string | null }): Promise<Reply> {
+    const status = this.get<Status>('status');
+    if (!status) return fail(404, 'No job for this user');
+    if (this.get('private') && session?.name.toLowerCase() !== this.get<string>('user')!.toLowerCase()) return fail(403, 'This profile is private');
+    if (album && status !== 'done') return fail(404, 'Job not done');
+    if (status === 'running') return ok({ status, progress: this.get('progress') });
+    if (status === 'error') return ok({ status, message: this.get('message'), code: this.get('code') });
+    const range: Range = {};
+    for (const k of ['from', 'to'] as const) {
+      if (q[k]) range[k] = Number(q[k]);
+      if (Number.isNaN(range[k])) return fail(400, `Invalid ${k}`);
+    }
+    const { state, cache } = await this.load();
+    if (album) {
+      const key = q.key ?? '';
+      const entry = state.plays[key];
+      const info = cache[key];
+      if (!entry || !info) return fail(404, 'Unknown album');
+      return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range) } });
+    }
+    const sort = q.sort ?? 'plays';
+    if (sort !== 'plays' && sort !== 'recent') return fail(400, 'Invalid sort');
+    const albums: GridAlbum[] = [];
+    for (const [key, e] of Object.entries(state.plays)) {
+      const info = cache[key];
+      const r = info && computeAlbum(e, info.tracks, range);
+      if (r) albums.push({ ...r, key, image: info.image, url: info.url });
+    }
+    return ok({ status, albums: sortAlbums(albums, sort) });
+  }
+}

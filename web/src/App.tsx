@@ -69,7 +69,7 @@ export default function App() {
           setError(data);
           return;
         }
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 2000));
       }
     }
     load().catch((err: Error) => {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { sign } from '../server/lastfm.ts';
+import { sign } from '../shared/lastfm.ts';
 
 test('sign: md5 of sorted key+value + secret, ignoring format and callback', () => {
   const expected = createHash('md5').update('api_keykmethodauth.getSessiontokents').digest('hex');

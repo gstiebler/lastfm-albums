@@ -15,32 +15,33 @@ Excluded: singles (tracklist of 1 track), albums without a tracklist on Last.fm,
 
 ## Setup
 
-Requires Node 26+.
+Requires Node 26+ and a free Cloudflare account (see [docs/cloudflare.md](docs/cloudflare.md)).
 
 1. Create a Last.fm API account at https://www.last.fm/api/account/create (callback URL can be empty).
-2. Create `.env` in the project root:
+2. Install dependencies and log in to Cloudflare:
+   ```bash
+   npm install
+   npx wrangler login
+   ```
+3. Create `.dev.vars` (gitignored) in the project root for local development:
    ```
    LASTFM_API_KEY=...
    LASTFM_SHARED_SECRET=...
    ```
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
 
 ## Running
 
-Development (API server with `--watch` + Vite dev server, which proxies API and sign-in routes):
+Development (Vite rebuild on change + `wrangler dev` on http://localhost:8787):
 ```bash
 npm run dev
 ```
 
-Production:
+Deploy (to `https://album-grid.<your-subdomain>.workers.dev`):
 ```bash
-npm run build
-npm start
+npx wrangler secret put LASTFM_API_KEY
+npx wrangler secret put LASTFM_SHARED_SECRET
+npm run deploy
 ```
-The server listens on `PORT` (default 3000) and serves the built app from `dist/`.
 
 Checks:
 ```bash
@@ -54,8 +55,8 @@ Profiles with "Hide recent listening information" enabled can't be read anonymou
 
 ## How it works
 
-- `server/` — Node HTTP server in TypeScript (run directly by Node, no build). Fetches scrobbles (`user.getRecentTracks`) and tracklists/covers (`album.getInfo`), throttled to under 5 requests/s with retries on transient errors.
+- `worker/` — Cloudflare Worker routing requests to Durable Objects: one `UserDO` per Last.fm user (fetches scrobbles and album info in alarm chunks, stores them in SQLite, ranks in memory) and one `SharedDO` (album cache and sign-in sessions). Runs on the free plan.
+- `shared/` — ranking (`rank.ts`) and the Last.fm client (`lastfm.ts`, throttled to under 5 requests/s with retries on transient errors).
 - `web/` — React + Vite frontend.
-- `cache/` — scrobbles per user (refreshed incrementally on each visit), album info shared across users, and sign-in sessions. Delete it to start fresh.
 
 The first load for a large history takes a while (about 13 minutes for 60k scrobbles); later loads only fetch new scrobbles. See [docs/design.md](docs/design.md) for details.

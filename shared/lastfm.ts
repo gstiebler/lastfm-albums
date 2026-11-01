@@ -3,6 +3,8 @@ import type { AlbumInfo, Scrobble } from './rank.ts';
 
 export type LastfmError = Error & { code?: number };
 export type Session = { name: string; key: string };
+// `fetches` counts HTTP attempts (retries included), so callers can stay under a subrequest budget.
+export type Config = { apiKey: string; secret: string; fetches?: number };
 type Params = Record<string, string | number>;
 
 const API = 'https://ws.audioscrobbler.com/2.0/';
@@ -18,7 +20,7 @@ async function throttle() {
 }
 
 // Last.fm api_sig: md5 of sorted key+value pairs (no format/callback) + shared secret.
-export function sign(params: Params, secret = process.env.LASTFM_SHARED_SECRET): string {
+export function sign(params: Params, secret: string): string {
   const str = Object.keys(params)
     .filter((k) => k !== 'format' && k !== 'callback')
     .sort()
@@ -31,15 +33,16 @@ export function sign(params: Params, secret = process.env.LASTFM_SHARED_SECRET):
 const isTransient = (code: number) => [8, 11, 16, 29].includes(code) || code >= 500;
 const RETRIES = 4;
 
-async function call(method: string, params: Params, signed = false): Promise<any> {
-  const all: Params = { method, ...params, api_key: process.env.LASTFM_API_KEY! };
-  if (signed) all.api_sig = sign(all);
+async function call(cfg: Config, method: string, params: Params, signed = false): Promise<any> {
+  const all: Params = { method, ...params, api_key: cfg.apiKey };
+  if (signed) all.api_sig = sign(all, cfg.secret);
   const url = new URL(API);
   url.search = new URLSearchParams({ ...all, format: 'json' }).toString();
   for (let attempt = 1; ; attempt++) {
     await throttle();
+    cfg.fetches = (cfg.fetches ?? 0) + 1;
     const res = await fetch(url);
-    const data = await res.json().catch(() => ({ error: res.status, message: `HTTP ${res.status}` }));
+    const data: any = await res.json().catch(() => ({ error: res.status, message: `HTTP ${res.status}` }));
     if (!data.error) return data;
     if (attempt > RETRIES || !isTransient(data.error)) {
       throw Object.assign(new Error(`Last.fm: ${data.message}`), { code: data.error });
@@ -49,34 +52,27 @@ async function call(method: string, params: Params, signed = false): Promise<any
 }
 
 // Exchanges a web-auth token for a session: {name, key}.
-export async function getSession(token: string): Promise<Session> {
-  return (await call('auth.getSession', { token }, true)).session;
+export async function getSession(cfg: Config, token: string): Promise<Session> {
+  return (await call(cfg, 'auth.getSession', { token }, true)).session;
 }
 
-// Fetches all scrobbles newer than `from` (uts). Calls onPage(scrobbles, page, totalPages) per page.
-// With `sk` the calls are signed as that user (needed for profiles hiding recent listening).
-export async function getRecentTracks(
+// Fetches one page of scrobbles between `from` and `to` (uts; `from` optional). Pass a fixed `to` so pages stay stable.
+// With `sk` the call is signed as that user (needed for profiles hiding recent listening).
+export async function getRecentTracksPage(
+  cfg: Config,
   user: string,
-  from: number | undefined,
-  onPage: (scrobbles: Scrobble[], page: number, totalPages: number) => void,
-  sk?: string,
-): Promise<void> {
-  // Fixed `to` keeps pages stable if the user scrobbles while we paginate.
-  const params = { user, limit: 200, to: Math.floor(Date.now() / 1000), ...(from && { from }) };
-  let page = 1;
-  let totalPages = 1;
-  do {
-    const data = await call('user.getRecentTracks', { ...params, page, ...(sk && { sk }) }, Boolean(sk));
-    totalPages = Number(data.recenttracks['@attr'].totalPages);
-    onPage(data.recenttracks.track ?? [], page, totalPages);
-    page++;
-  } while (page <= totalPages);
+  page: number,
+  { from, to, sk }: { from?: number; to: number; sk?: string },
+): Promise<{ tracks: Scrobble[]; totalPages: number }> {
+  const params = { user, limit: 200, to, page, ...(from && { from }), ...(sk && { sk }) };
+  const data = await call(cfg, 'user.getRecentTracks', params, Boolean(sk));
+  return { tracks: data.recenttracks.track ?? [], totalPages: Number(data.recenttracks['@attr'].totalPages) };
 }
 
 // Returns album.getInfo `album` object, or null when Last.fm doesn't know it (error 6).
-export async function getAlbumInfo(artist: string, album: string): Promise<AlbumInfo | null> {
+export async function getAlbumInfo(cfg: Config, artist: string, album: string): Promise<AlbumInfo | null> {
   try {
-    return (await call('album.getInfo', { artist, album, autocorrect: 1 })).album;
+    return (await call(cfg, 'album.getInfo', { artist, album, autocorrect: 1 })).album;
   } catch (err) {
     if ((err as LastfmError).code === 6) return null;
     throw err;
