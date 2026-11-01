@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
   needsLookup, computeAlbum, albumTracks, sortAlbums, MIN_DISTINCT_TRACKS,
-} from '../server/rank.ts';
+} from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
   artist: { '#text': artist }, album: { '#text': album }, name, date: { uts: String(uts) }, ...extra,

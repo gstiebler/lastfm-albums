@@ -1,0 +1,18 @@
+{
+  "name": "album-grid",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/login", "/callback", "/logout"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "USER", "class_name": "UserDO" },
+      { "name": "SHARED", "class_name": "SharedDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserDO", "SharedDO"] }]
+}

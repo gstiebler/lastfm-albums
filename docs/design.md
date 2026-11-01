@@ -3,7 +3,7 @@
 Web app: enter a Last.fm username, see a grid of album covers ranked by how completely you listened to each album.
 
 ## Source
-Last.fm only. Public scrobbles need no login. Server holds `LASTFM_API_KEY` and `LASTFM_SHARED_SECRET` (from `.env`, loaded with `node --env-file=.env`); they never reach the browser.
+Last.fm only. Public scrobbles need no login. The Worker holds `LASTFM_API_KEY` and `LASTFM_SHARED_SECRET` (`.dev.vars` locally, `wrangler secret put` when deployed); they never reach the browser.
 
 Profiles that hide recent listening fail with Last.fm error 17. "Sign in with Last.fm" (web auth) lets users see their own grid: scrobble calls are then signed (`api_sig`, `sk`) with their session key.
 
@@ -34,22 +34,21 @@ Excluded:
 - Rate limit: stay ≤ 5 req/s overall.
 - Errors from Last.fm (e.g. error 6 user not found) bubble up to the UI as a message.
 
-## Server (Node, no runtime dependencies)
-TypeScript run directly by Node (type stripping, no build step; erasable syntax only, relative imports use `.ts`).
-- `node:http` serving the built frontend from `dist/` plus:
-  - `POST /api/grid/:user` — starts (or reuses running) job, returns `{status}`.
-  - `GET /api/grid/:user?from=&to=&sort=` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message}`. `from`/`to` are optional unix seconds (inclusive); when done, the ranking is computed per request from the job's in-memory state + album cache (no Last.fm calls, no file reads). Non-numeric values → 400. `sort` is `plays` (default) or `recent`; anything else → 400. Albums carry `completedAt` and `key` (the albumKey).
-  - `GET /api/grid/:user/album?key=<albumKey>&from=&to=` — `{status: 'done', album: {artist, album, image, url, tracks: [{name, plays, lastPlayed|null}]}}`, tracks in tracklist order (`albumTracks` in `rank.ts`; duplicate normalized names once), plays/dates limited to the range. Built from job state + album cache (no Last.fm calls). Same 403 privacy rule and from/to validation as the grid; 404 if no job, job not done, or unknown key.
-- Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, 1 year), sessions `{name, key}` persisted in `cache/sessions.json`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
-- A job started by a session whose name equals the requested user runs with that session key and is `private`: `GET` returns 403 to anyone else. Error 17 on an unsigned request reaches the UI as `code: 17` (UI shows the sign-in link).
-- In-memory job map, keyed by lowercase username; a finished job keeps its loaded `state` and album `cache`. Disk cache in `cache/` (gitignored):
-  - `cache/users/<user>.json` — scrobbles aggregated as `{version: 2, lastUts, plays: {albumKey: {artist, album, tracks: {trackKey: {name, times: [unix seconds of each play]}}}}}`. A file without `version: 2` is discarded (full refetch). On refresh, fetch only scrobbles with `from = lastUts + 1`.
-  - `cache/albums.json` — `album.getInfo` results keyed by albumKey, shared across users (store misses too).
+## Server (Cloudflare Worker + Durable Objects)
+Runs on the Workers free plan; limits and rationale in [cloudflare.md](cloudflare.md). TypeScript bundled by wrangler; relative imports use `.ts`.
+- `worker/index.ts` routes, with static assets from `dist/` (SPA fallback; the Worker only runs first for `/api/*`, `/login`, `/callback`, `/logout`):
+  - `POST /api/grid/:user` — starts (or reuses running) fetch, returns `{status}`.
+  - `GET /api/grid/:user?from=&to=&sort=` — `{status: 'running', progress: {phase, done, total}}` | `{status: 'done', albums: [...]}` | `{status: 'error', message, code?}`. `from`/`to` are optional unix seconds (inclusive); when done, the ranking is computed per request in memory (no Last.fm calls). Non-numeric values → 400. `sort` is `plays` (default) or `recent`; anything else → 400. Albums carry `completedAt` and `key` (the albumKey).
+  - `GET /api/grid/:user/album?key=<albumKey>&from=&to=` — `{status: 'done', album: {artist, album, image, url, tracks: [{name, plays, lastPlayed|null}]}}`, tracks in tracklist order (`albumTracks` in `rank.ts`; duplicate normalized names once), plays/dates limited to the range. Same 403 privacy rule and from/to validation as the grid; 404 if never fetched, not done, or unknown key.
+  - Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, Secure, 1 year), `{name, key}` stored in `SharedDO`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
+- `UserDO` (`worker/user.ts`), one per lowercase username, SQLite: `meta(k, v)` (status, progress, error, private, sk, cursor) and `pages(id, data)` (one row per Last.fm page of compact scrobbles). `POST` sets the cursor and arms an alarm; each alarm makes at most 40 Last.fm fetches (free plan: 50 subrequests per invocation) and re-arms itself: first scrobble pages (`from = lastUts + 1`, fixed `to`), then `album.getInfo` for albums that need a lookup, cached in `SharedDO` (`getAlbums`/`putAlbums`, misses stored too). The aggregated state and album cache live on the instance and are rebuilt from storage after eviction. A failed fetch becomes `status: 'error'` with `message` and `code`; a retry after an album-phase error resumes without refetching scrobbles.
+- A fetch started by a session whose name equals the requested user runs with that session key and is `private`: `GET` returns 403 to anyone else. Error 17 on an unsigned request reaches the UI as `code: 17` (UI shows the sign-in link).
+- `SharedDO` (`worker/shared.ts`), single instance: `albums(key, info)` and `sessions(sid, name, key, created)`, exposed as RPC methods.
 
 ## Frontend (`web/`, Vite + React + TypeScript)
-`npm run build` emits `dist/`, served by the server. In dev, `vite` serves `web/` and proxies `/api`, `/login`, `/callback`, `/logout` to the server on :3000 (no `changeOrigin`, so the Last.fm callback URL and cookie use the vite origin).
+`npm run build` emits `dist/`, served by the Worker as static assets. In dev, `vite build --watch` rebuilds `dist/` while `wrangler dev` serves everything on :8787.
 - Header: "Sign in with Last.fm" link, or "Signed in as <name> · Sign out".
-- Username input + button, progress line while running (polling every 1s).
+- Username input + button, progress line while running (polling every 2s).
 - Responsive grid of covers in rank order. Each tile: cover (placeholder if none), album, artist, `% · n tracks · ×full plays` (for `recent` sort, the completedAt date via `toLocaleDateString()` replaces `×full`). Tiles are buttons; clicking opens the album panel.
 - Album panel (`AlbumPanel`): native `<dialog>` via `showModal()` (centered, max 520px, scrollable body; full screen at ≤600px). Closes on Esc, backdrop click, or ×. Header = cover, artist, album, tile stats line; body = tracklist (number, name, `×N`, last played date; unplayed dimmed with "—") fetched from the album endpoint with the current from/to; "Loading…" while fetching, errors shown inline; footer link "Open on Last.fm ↗".
 - "From" / "To" `<input type="date">` next to the username form; either may be empty. Changing them re-ranks immediately via `GET` (no Last.fm calls). Dates are converted to unix seconds in the browser's local timezone; `to` covers the whole day.
@@ -57,11 +56,12 @@ TypeScript run directly by Node (type stripping, no build step; erasable syntax 
 - URL `?user=&from=YYYY-MM-DD&to=YYYY-MM-DD&sort=recent` (empty/default ones omitted), read on load, so grids are shareable.
 
 ## Code layout
-- `server/rank.ts` — pure: normalize, aggregate scrobbles, match tracklist, compute metrics, sort. Unit tested (`test/*.test.ts`, `node --test`).
-- `server/lastfm.ts` — API client + throttle.
-- `server/server.ts` — HTTP + jobs + cache.
+- `shared/rank.ts` — pure: normalize, aggregate scrobbles, match tracklist, compute metrics, sort. Unit tested (`test/*.test.ts`, `node --test`).
+- `shared/lastfm.ts` — API client + throttle; key/secret passed in as config.
+- `worker/` — `index.ts` (routing, sign-in), `user.ts` (`UserDO`), `shared.ts` (`SharedDO`), `env.ts`.
 - `web/` — `index.html`, `src/main.tsx`, `App.tsx`, `components/` (`AlbumTile`, `AuthStatus`), `style.css`. Vite config at the root (`root: 'web'`, output `dist/`).
-- `package.json` scripts: `dev` (server + vite), `build`, `start` = `node --env-file=.env server/server.ts`, `test`, `typecheck` (root tsconfig for server/test, `web/tsconfig.json` for the frontend).
+- `wrangler.jsonc` — Worker, assets, Durable Object bindings and migration.
+- `package.json` scripts: `dev` (vite build --watch + wrangler dev), `build`, `deploy`, `test`, `typecheck` (root tsconfig for shared/test, `worker/tsconfig.json`, `web/tsconfig.json`).
 
 ## Non-goals
-Spotify, a database, a build step for the server.
+Spotify, an external database, a local Node server.
