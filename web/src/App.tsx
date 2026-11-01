@@ -43,6 +43,8 @@ export default function App() {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [open, setOpen] = useState<Album | null>(null);
   const runId = useRef(0);
+  const query = useRef({ from, to, sort }); // latest params for the poll loop
+  query.current = { from, to, sort };
 
   // Poll the job for `user`; a change of `user` cancels the previous run.
   useEffect(() => {
@@ -57,10 +59,12 @@ export default function App() {
     async function load() {
       await api(user, 'POST');
       while (id === runId.current) {
-        const data = await api(user, 'GET');
+        const q = query.current;
+        const data = await api(user, 'GET', q.from, q.to, q.sort);
         if (id !== runId.current) return;
         if (data.status === 'running') {
           setStatus(progressText(data.progress));
+          if (data.albums) setAlbums(data.albums); // partial grid; keep the previous one until this arrives
         } else if (data.status === 'done') {
           setReady(user);
           return;
@@ -144,7 +148,7 @@ export default function App() {
       <main id="grid">
         {albums.map((a) => <AlbumTile key={a.key} a={a} sort={sort} onOpen={() => setOpen(a)} />)}
       </main>
-      {open && <AlbumPanel user={ready} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} />}
+      {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} />}
     </>
   );
 }

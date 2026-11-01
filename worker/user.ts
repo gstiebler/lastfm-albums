@@ -126,7 +126,8 @@ export class UserDO extends DurableObject<Env> {
   // Albums that need an album.getInfo lookup and aren't cached yet.
   private async todo() {
     const { state, cache } = await this.load();
-    return Object.entries(state.plays).filter(([k, e]) => needsLookup(e) && !(k in cache));
+    const distinct = (e: { tracks: object }) => Object.keys(e.tracks).length;
+    return Object.entries(state.plays).filter(([k, e]) => needsLookup(e) && !(k in cache)).sort(([, a], [, b]) => distinct(b) - distinct(a)); // most-heard first
   }
 
   private async load(): Promise<Data> {
@@ -144,8 +145,10 @@ export class UserDO extends DurableObject<Env> {
     const status = this.get<Status>('status');
     if (!status) return fail(404, 'No job for this user');
     if (this.get('private') && session?.name.toLowerCase() !== this.get<string>('user')!.toLowerCase()) return fail(403, 'This profile is private');
-    if (album && status !== 'done') return fail(404, 'Job not done');
-    if (status === 'running') return ok({ status, progress: this.get('progress') });
+    const progress = this.get<Progress>('progress');
+    const partial = status === 'running' && progress?.phase === 'albums'; // album cache is usable while looking up
+    if (album && status !== 'done' && !partial) return fail(404, 'Job not done');
+    if (status === 'running' && !partial) return ok({ status, progress });
     if (status === 'error') return ok({ status, message: this.get('message'), code: this.get('code') });
     const range: Range = {};
     for (const k of ['from', 'to'] as const) {
@@ -168,6 +171,6 @@ export class UserDO extends DurableObject<Env> {
       const r = info && computeAlbum(e, info.tracks, range);
       if (r) albums.push({ ...r, key, image: info.image, url: info.url });
     }
-    return ok({ status, albums: sortAlbums(albums, sort) });
+    return ok({ status, ...(partial && { progress }), albums: sortAlbums(albums, sort) });
   }
 }
