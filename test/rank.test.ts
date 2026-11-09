@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
+  normalizeName, normalizeArtist, normalizeTrack, albumKey, aggregate, getTracklist,
   needsLookup, computeAlbum, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
@@ -292,4 +292,28 @@ test('scrobbleReason covers each branch', () => {
   assert.equal(scrobbleReason('x', many, info, true, 'z', {}), 'track not on tracklist');
   assert.equal(scrobbleReason('x', many, info, true, 'z', { z: 'a' }), 'in grid');
   assert.equal(scrobbleReason('x', many, info, true, 'A (Remastered)', {}), 'in grid');
+});
+
+test('normalizeArtist merges spelling variants', () => {
+  assert.equal(normalizeArtist('Jean-Michel Jarre'), normalizeArtist('Jean Michel Jarre'));
+  assert.equal(normalizeArtist('Beyoncé'), normalizeArtist('Beyonce'));
+  assert.equal(normalizeArtist('!!!'), '!!!');
+  for (const x of ['Jean-Michel Jarre', 'Beyoncé', '!!!', "Guns N' Roses", 'Simon & Garfunkel']) {
+    assert.equal(normalizeArtist(normalizeArtist(x)), normalizeArtist(x));
+    assert.equal(normalizeArtist(normalizeName(x)), normalizeArtist(x));
+  }
+});
+
+test('albumKey merges artist hyphen variants', () => {
+  assert.equal(albumKey('Jean Michel Jarre', 'Oxygène'), albumKey('Jean-Michel Jarre', 'Oxygène'));
+});
+
+test('aggregate merges artist spellings into one entry', () => {
+  const state = aggregate({ version: 2, lastUts: 0, plays: {} }, [
+    scrobble('Jean Michel Jarre', 'Oxygène', 'Part 1', 1),
+    scrobble('Jean-Michel Jarre', 'Oxygène', 'Part 2', 2),
+  ]);
+  assert.equal(Object.keys(state.plays).length, 1);
+  assert.equal(Object.values(state.plays)[0].tracks['part 1'].times.length, 1);
+  assert.equal(Object.keys(Object.values(state.plays)[0].tracks).length, 2);
 });

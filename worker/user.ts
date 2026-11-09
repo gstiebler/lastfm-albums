@@ -53,8 +53,15 @@ export class UserDO extends DurableObject<Env> {
   private aliases(key: string): Aliases {
     if (!this.matches) {
       this.matches = {};
-      for (const r of this.sql.exec('SELECT album, played, track FROM matches')) {
-        (this.matches[r.album as string] ??= {})[normalizeTrack(r.played as string)] = normalizeTrack(r.track as string);
+      for (const r of this.sql.exec('SELECT album, played, track FROM matches').toArray()) {
+        let album = r.album as string;
+        const [artist, name] = album.split('\u0000');
+        const key = albumKey(artist, name);
+        if (key !== album) {
+          this.sql.exec('UPDATE OR REPLACE matches SET album = ? WHERE album = ? AND played = ?', key, album, r.played);
+          album = key;
+        }
+        (this.matches[album] ??= {})[normalizeTrack(r.played as string)] = normalizeTrack(r.track as string);
       }
     }
     return this.matches[key] ?? {};

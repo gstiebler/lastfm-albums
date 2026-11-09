@@ -38,6 +38,7 @@ SQLite tables:
 - `meta(k, v)`: `lastUts`, `status`, `progress`, `error`, `private`, `sk` (session key used for a private user's fetch), `to` (the fixed `to` of the running fetch), `page`, `pages`.
 - `pages(id INTEGER PRIMARY KEY, data TEXT)`: compact scrobbles of one Last.fm page, `[[artist, album, track, uts], …]`.
 - `matches(album, played, track, PRIMARY KEY (album, played))`: manual track matches, one row per mapping (`album` = albumKey, raw names). Loaded lazily into memory, written through on `POST …/match`.
+- `albumKey` normalizes the artist part with `normalizeArtist` (accents, hyphens, punctuation); old match keys are recomputed and migrated on load.
 
 Flow:
 1. `POST` → same guards as today (running → reuse; private and requester isn't owner → reuse). Otherwise store `to = now`, `page = 1`, status `running`, `setAlarm(now)`.

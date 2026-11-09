@@ -35,7 +35,7 @@ function artistRuns(albums: Album[]) {
   const runs: { artist: string; songs: number; albums: Album[] }[] = [];
   for (const a of albums) {
     const last = runs.at(-1);
-    if (last && last.artist.trim().toLowerCase() === a.artist.trim().toLowerCase()) {
+    if (last && last.albums[0].key.split('\u0000')[0] === a.key.split('\u0000')[0]) {
       last.songs += a.heard;
       last.albums.push(a);
     } else runs.push({ artist: a.artist, songs: a.heard, albums: [a] });

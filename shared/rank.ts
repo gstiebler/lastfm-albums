@@ -38,6 +38,17 @@ export function normalizeName(s: string): string {
   return String(s).trim().toLowerCase();
 }
 
+// Merges artist spelling variants (accents, hyphens, punctuation); idempotent.
+export function normalizeArtist(s: string): string {
+  const n = normalizeName(s)
+    .normalize('NFKD').replace(/\p{M}/gu, '')
+    .replace(/['’]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  return n || normalizeName(s);
+}
+
 // Strips remaster/feat suffixes, accents and punctuation; idempotent. Live/remix/mono etc. stay distinct.
 export function normalizeTrack(s: string): string {
   const n = normalizeName(s)
@@ -59,7 +70,7 @@ export type Aliases = Record<string, string>;
 const keyOf = (tk: string, aliases: Aliases = {}) => aliases[normalizeTrack(tk)] ?? normalizeTrack(tk);
 
 export function albumKey(artist: string, album: string): string {
-  return `${normalizeName(artist)}\u0000${normalizeName(album)}`;
+  return `${normalizeArtist(artist)}\u0000${normalizeName(album)}`;
 }
 
 // Merge raw user.getRecentTracks entries into state {version, lastUts, plays}.
@@ -182,9 +193,9 @@ export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'hea
     a.artist.localeCompare(b.artist) || a.album.localeCompare(b.album);
   if (method !== 'artist') return [...albums].sort((a, b) => byAlbum(a, b, method));
   const score = new Map<string, number>();
-  for (const a of albums) score.set(normalizeName(a.artist), (score.get(normalizeName(a.artist)) ?? 0) + a.heard);
+  for (const a of albums) score.set(normalizeArtist(a.artist), (score.get(normalizeArtist(a.artist)) ?? 0) + a.heard);
   return [...albums].sort((a, b) => {
-    const ka = normalizeName(a.artist);
+    const ka = normalizeArtist(a.artist);
     const kb = normalizeName(b.artist);
     return score.get(kb)! - score.get(ka)! || ka.localeCompare(kb) || byAlbum(a, b, 'plays');
   });
