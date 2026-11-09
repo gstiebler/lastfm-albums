@@ -23,3 +23,10 @@ export type GridResponse =
   | { status: 'running'; progress: Progress; albums?: Album[] }
   | { status: 'done'; albums: Album[] }
   | { status: 'error'; message: string; code?: number };
+
+export type DebugScrobble = { uts: number; artist: string; album: string; track: string; pending: boolean; reason: string };
+export type DebugMeta = {
+  status: string | null; progress: Progress | null; message: string | null; code: number | null; user: string | null;
+  lastUts: number | null; from: number | null; to: number | null; end: number | null; page: number | null; pages: number | null;
+};
+export type DebugResponse = { meta: DebugMeta; scrobbles: DebugScrobble[] };

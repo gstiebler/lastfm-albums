@@ -90,6 +90,18 @@ export function needsLookup(entry: AlbumPlays): boolean {
   return Object.keys(entry.tracks).length >= MIN_DISTINCT_TRACKS;
 }
 
+// Why a scrobble does or doesn't contribute to the grid (mirrors needsLookup/computeAlbum).
+export function scrobbleReason(album: string, entry: AlbumPlays | undefined, info: { tracks: string[] } | null | undefined, cached: boolean, track: string, aliases: Aliases): string {
+  if (!album) return 'no album tag';
+  if (!entry || !needsLookup(entry)) return `fewer than ${MIN_DISTINCT_TRACKS} distinct tracks (${entry ? Object.keys(entry.tracks).length : 0})`;
+  if (!cached) return 'album lookup pending';
+  if (!info) return 'album not found on Last.fm';
+  const keys = new Set(info.tracks.map(normalizeTrack));
+  if (keys.size <= 1) return 'empty tracklist';
+  if (!keys.has(keyOf(track, aliases))) return 'track not on tracklist';
+  return 'in grid';
+}
+
 // Returns {artist, album, heard, length, pct, full, completedAt} or null if excluded. Counts only plays within `range`.
 export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Range = {}, aliases: Aliases = {}): AlbumResult | null {
   const { from = -Infinity, to = Infinity } = range;

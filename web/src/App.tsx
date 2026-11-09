@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import AlbumPanel from './components/AlbumPanel.tsx';
 import AlbumTile from './components/AlbumTile.tsx';
+import DebugPanel from './components/DebugPanel.tsx';
 import AuthStatus, { SignInLink } from './components/AuthStatus.tsx';
 import type { Album, GridResponse, Progress, Sort } from './types.ts';
 
@@ -55,6 +56,7 @@ export default function App() {
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [open, setOpen] = useState<Album | null>(null);
+  const [debug, setDebug] = useState(false);
   const [version, setVersion] = useState(0); // bumped after a manual match to re-rank
   const runId = useRef(0);
   const query = useRef({ from, to, sort }); // latest params for the poll loop
@@ -157,6 +159,7 @@ export default function App() {
           <button type="submit">Show</button>
         </form>
         <p id="status" role="status">{status}</p>
+        {run.user && <button type="button" className="debug-btn" onClick={() => setDebug(true)}>Debug</button>}
         <p id="error" role="alert">
           {error && (error.code === 17
             ? <>This profile is private — <SignInLink /></>
@@ -171,6 +174,7 @@ export default function App() {
             </section>
           ))}</main>
         : <main id="grid" className="grid">{albums.map(tile)}</main>}
+      {debug && <DebugPanel user={run.user} onClose={() => setDebug(false)} />}
       {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} onChange={() => setVersion((v) => v + 1)} />}
     </>
   );

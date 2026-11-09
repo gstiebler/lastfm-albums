@@ -29,6 +29,7 @@ browser ──> Worker (static assets + /api routing, ~no CPU)
 - Static assets: `dist/` via Workers static assets (`assets.directory`, SPA fallback).
 - Same routes as today, same request/response shapes, so the frontend doesn't change:
   - `POST /api/grid/:user`, `GET /api/grid/:user?from&to&sort`, `GET /api/grid/:user/album?key&from&to` → forwarded to the user's DO along with the signed-in session (`{name, key}` or null).
+  - `GET /api/grid/:user/debug?n=` → `UserDO.debug`: job meta (no `sk`) + the latest `n` (default 100, max 1000) scrobbles with the reason each is or isn't in the grid (`scrobbleReason`); same 404/403 guards as read.
   - `GET /login`, `GET /callback`, `GET /api/me`, `POST /logout`.
 - Callback URL built from the request origin (`https://…/callback`). Cookie `sid`: `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=1y`.
 

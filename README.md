@@ -12,6 +12,8 @@ A date range (From / To) limits the ranking to plays within those dates. Usernam
 
 Click an album to open a details panel with its tracklist: play count and last played date per track (within the selected date range), unplayed tracks dimmed, and a link to the album on Last.fm. Close it with Esc, the × button or by clicking outside.
 
+The **Debug** button lists your latest scrobbles with the reason each does or doesn't appear in the grid (`GET /api/grid/:user/debug?n=`).
+
 Excluded: singles (tracklist of 1 track), albums without a tracklist on Last.fm, and albums with fewer than 3 different tracks played.
 
 ## Setup

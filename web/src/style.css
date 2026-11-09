@@ -63,3 +63,12 @@ a { color: var(--accent); }
 .extras li { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid #333; }
 .extras .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extras select { max-width: 50%; }
+
+.debug-btn { font-size: 0.75rem; padding: 2px 8px; margin-top: 4px; }
+.panel.debug { max-width: 960px; }
+.debug-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 0.8rem; margin: 0 0 12px; }
+.debug-meta dt { color: var(--muted); }
+.debug-meta dd { margin: 0; }
+.debug-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+.debug-table th, .debug-table td { text-align: left; padding: 2px 8px 2px 0; vertical-align: top; }
+.debug-table tr.ok { color: var(--muted); }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -278,4 +278,18 @@ test('extraTracks: only non-tracklist, respects range, fills mapped track, sorte
   ]);
   assert.deepEqual(extraTracks(e, ['A', 'B'], { from: 15, to: 50 }), [{ name: 'y', plays: 2, track: null }]);
   assert.deepEqual(extraTracks(e, ['A', 'B'], { from: 15, to: 50 }, { y: 'b' }), [{ name: 'y', plays: 2, track: 'B' }]);
+});
+
+test('scrobbleReason covers each branch', () => {
+  const few = entry({ a: [1], b: [2] });
+  const many = entry({ a: [1], b: [2], c: [3] });
+  const info = { tracks: ['A', 'B', 'C'] };
+  assert.equal(scrobbleReason('', undefined, undefined, false, 'a', {}), 'no album tag');
+  assert.equal(scrobbleReason('x', few, undefined, false, 'a', {}), 'fewer than 3 distinct tracks (2)');
+  assert.equal(scrobbleReason('x', many, undefined, false, 'a', {}), 'album lookup pending');
+  assert.equal(scrobbleReason('x', many, null, true, 'a', {}), 'album not found on Last.fm');
+  assert.equal(scrobbleReason('x', many, { tracks: ['A'] }, true, 'a', {}), 'empty tracklist');
+  assert.equal(scrobbleReason('x', many, info, true, 'z', {}), 'track not on tracklist');
+  assert.equal(scrobbleReason('x', many, info, true, 'z', { z: 'a' }), 'in grid');
+  assert.equal(scrobbleReason('x', many, info, true, 'A (Remastered)', {}), 'in grid');
 });

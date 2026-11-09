@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getRecentTracksPage, getAlbumInfo } from '../shared/lastfm.ts';
 import type { Config, LastfmError, Session } from '../shared/lastfm.ts';
-import { aggregate, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums } from '../shared/rank.ts';
+import { aggregate, albumKey, scrobbleReason, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums } from '../shared/rank.ts';
 import type { AlbumResult, Aliases, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
 import { shared } from './env.ts';
 import type { Env } from './env.ts';
@@ -190,6 +190,26 @@ export class UserDO extends DurableObject<Env> {
       if (r) albums.push({ ...r, key, image: info.image, url: info.url });
     }
     return ok({ status, ...(partial && { progress }), albums: sortAlbums(albums, sort) });
+  }
+
+  // GET /api/grid/:user/debug: job meta + the latest n scrobbles with the reason each is (not) in the grid.
+  async debug(session: Session | null, n: number): Promise<Reply> {
+    const status = this.get<Status>('status');
+    if (!status) return fail(404, 'No job for this user');
+    if (this.get('private') && !this.isOwner(session)) return fail(403, 'This profile is private');
+    const end = this.get<number>('end') ?? 0;
+    const rows = [...this.sql.exec('SELECT id, data FROM pages')].flatMap((r) =>
+      expand(JSON.parse(r.data as string)).map((s) => ({ s, pending: (r.id as number) > end })));
+    rows.sort((a, b) => Number(b.s.date!.uts) - Number(a.s.date!.uts));
+    const { state, cache } = await this.load();
+    const scrobbles = rows.slice(0, Math.min(Math.max(n, 1), 1000)).map(({ s, pending }) => {
+      const [artist, album, track] = [s.artist['#text'], s.album['#text'], s.name];
+      const key = albumKey(artist, album);
+      const reason = pending ? 'fetch not finished' : scrobbleReason(album, state.plays[key], cache[key], key in cache, track, this.aliases(key));
+      return { uts: Number(s.date!.uts), artist, album, track, pending, reason };
+    });
+    const meta = Object.fromEntries((['status', 'progress', 'message', 'code', 'user', 'lastUts', 'from', 'to', 'end', 'page', 'pages'] as const).map((k) => [k, this.get(k) ?? null]));
+    return ok({ status: 'ok', meta, scrobbles });
   }
 
   // POST /api/grid/:user/match: map a played track to a tracklist track (null removes the mapping). Owner only.
