@@ -31,15 +31,19 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (sid) await shared(env).deleteSession(sid);
     return new Response(null, { status: 204, headers: { 'Set-Cookie': cookie('', 0) } });
   }
-  const m = pathname.match(/^\/api\/grid\/([^/]+)(\/album)?$/);
+  const m = pathname.match(/^\/api\/grid\/([^/]+)(\/album|\/match)?$/);
   if (m) {
     const user = decodeURIComponent(m[1]);
     if (!/^[\w.-]{1,64}$/.test(user)) return json({ status: 'error', message: 'Invalid username' }, 400);
     const stub = env.USER.get(env.USER.idFromName(user.toLowerCase()));
     const session = await getSessionFor();
+    if (req.method === 'POST' && m[2] === '/match') {
+      const { code, body } = await stub.match(session, await req.json());
+      return json(body, code);
+    }
     if (req.method === 'POST') return json(await stub.start(user, session));
     const q = { key: searchParams.get('key'), from: searchParams.get('from'), to: searchParams.get('to'), sort: searchParams.get('sort') };
-    const { code, body } = await stub.read(session, Boolean(m[2]), q);
+    const { code, body } = await stub.read(session, m[2] === '/album', q);
     return json(body, code);
   }
   return json({ status: 'error', message: 'Not found' }, 404);
