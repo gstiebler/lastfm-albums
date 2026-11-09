@@ -317,3 +317,11 @@ test('aggregate merges artist spellings into one entry', () => {
   assert.equal(Object.values(state.plays)[0].tracks['part 1'].times.length, 1);
   assert.equal(Object.keys(Object.values(state.plays)[0].tracks).length, 2);
 });
+
+test('computeAlbum: 3+ played but none on tracklist still shown with heard 0', () => {
+  const r = computeAlbum(entry({ x: [10], y: [20], z: [30] }), ['a', 'b', 'c'])!;
+  assert.equal(r.heard, 0);
+  assert.equal(r.pct, 0);
+  assert.equal(r.full, 0);
+  assert.equal(r.completedAt, 0);
+});

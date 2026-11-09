@@ -132,15 +132,14 @@ export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Rang
     counts.set(k, times.length);
     last.set(k, Math.max(...times));
   }
-  if (counts.size === 0) return null;
   return {
     artist: entry.artist,
     album: entry.album,
     heard: counts.size,
     length: keys.size,
     pct: counts.size / keys.size,
-    full: Math.min(...counts.values()),
-    completedAt: Math.min(...last.values()),
+    full: counts.size ? Math.min(...counts.values()) : 0, // 0 matched: still shown so tracks can be matched manually
+    completedAt: last.size ? Math.min(...last.values()) : 0,
   };
 }
 

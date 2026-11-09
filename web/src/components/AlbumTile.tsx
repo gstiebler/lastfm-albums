@@ -1,7 +1,7 @@
 import type { Album, Sort } from '../types.ts';
 
 export function statsLine(a: Album, sort: Sort) {
-  return `${Math.round(a.pct * 100)}% · ${a.length} tracks · ${sort === 'recent' ? new Date(a.completedAt * 1000).toLocaleDateString() : `×${a.full}`}`;
+  return `${Math.round(a.pct * 100)}% · ${a.length} tracks · ${sort === 'recent' ? (a.completedAt ? new Date(a.completedAt * 1000).toLocaleDateString() : '—') : `×${a.full}`}`;
 }
 
 export default function AlbumTile({ a, sort, onOpen }: { a: Album; sort: Sort; onOpen: () => void }) {
