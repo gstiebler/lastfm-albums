@@ -8,10 +8,11 @@ Last.fm only. Public scrobbles need no login. The Worker holds `LASTFM_API_KEY` 
 Profiles that hide recent listening fail with Last.fm error 17. "Sign in with Last.fm" (web auth) lets users see their own grid: scrobble calls are then signed (`api_sig`, `sk`) with their session key.
 
 ## Ranking
-Per album (key: normalized artist + album name). Two sort methods, user-selected (`sort=plays|recent`):
+Per album (key: normalized artist + album name). Three sort methods, user-selected (`sort=plays|recent|artist`):
 
 - `plays` (default): % heard desc, tracklist length desc, full plays desc, then artist/album.
 - `recent`: % heard desc, **completedAt** desc, then artist/album.
+- `artist`: flat list grouped by artist (normalized name). Artists ordered by score (sum of `heard` over their albums in the response, so range-limited) desc, then name; albums within an artist use the `plays` order.
 
 Metrics:
 1. **% heard** = tracks of the album's tracklist you played ≥1 time ÷ tracklist length. Desc.
@@ -38,7 +39,7 @@ Excluded:
 Runs on the Workers free plan; limits and rationale in [cloudflare.md](cloudflare.md). TypeScript bundled by wrangler; relative imports use `.ts`.
 - `worker/index.ts` routes, with static assets from `dist/` (SPA fallback; the Worker only runs first for `/api/*`, `/login`, `/callback`, `/logout`):
   - `POST /api/grid/:user` — starts (or reuses running) fetch, returns `{status}`.
-  - `GET /api/grid/:user?from=&to=&sort=` — `{status: 'running', progress: {phase, done, total}, albums?: [...]}` (`albums` only in the `albums` phase: the grid from the albums looked up so far, same range/sort handling as done) | `{status: 'done', albums: [...]}` | `{status: 'error', message, code?}`. `from`/`to` are optional unix seconds (inclusive); when done, the ranking is computed per request in memory (no Last.fm calls). Non-numeric values → 400. `sort` is `plays` (default) or `recent`; anything else → 400. Albums carry `completedAt` and `key` (the albumKey).
+  - `GET /api/grid/:user?from=&to=&sort=` — `{status: 'running', progress: {phase, done, total}, albums?: [...]}` (`albums` only in the `albums` phase: the grid from the albums looked up so far, same range/sort handling as done) | `{status: 'done', albums: [...]}` | `{status: 'error', message, code?}`. `from`/`to` are optional unix seconds (inclusive); when done, the ranking is computed per request in memory (no Last.fm calls). Non-numeric values → 400. `sort` is `plays` (default), `recent` or `artist`; anything else → 400. Albums carry `completedAt` and `key` (the albumKey).
   - `GET /api/grid/:user/album?key=<albumKey>&from=&to=` — `{status: 'done', album: {artist, album, image, url, tracks: [{name, plays, lastPlayed|null}]}}`, tracks in tracklist order (`albumTracks` in `rank.ts`; duplicate normalized names once), plays/dates limited to the range. Same 403 privacy rule and from/to validation as the grid; 404 if never fetched, unknown/uncached key, or still fetching scrobbles (allowed while looking up albums).
   - Sign-in: `GET /login` → 302 to Last.fm auth with `cb=<origin>/callback`; `GET /callback?token=` → `auth.getSession`, random `sid` cookie (HttpOnly, Secure, 1 year), `{name, key}` stored in `SharedDO`, redirect to `/?user=<name>`; `GET /api/me` → `{name}` | `{name: null}`; `POST /logout` → 204.
 - `UserDO` (`worker/user.ts`), one per lowercase username, SQLite: `meta(k, v)` (status, progress, error, private, sk, cursor) and `pages(id, data)` (one row per Last.fm page of compact scrobbles). `POST` sets the cursor and arms an alarm; each alarm makes at most 40 Last.fm fetches (free plan: 50 subrequests per invocation) and re-arms itself: first scrobble pages (`from = lastUts + 1`, fixed `to`), then `album.getInfo` for albums that need a lookup (most distinct tracks played first, so the best-heard albums appear first), cached in `SharedDO` (`getAlbums`/`putAlbums`, misses stored too). The aggregated state and album cache live on the instance and are rebuilt from storage after eviction. A failed fetch becomes `status: 'error'` with `message` and `code`; a retry after an album-phase error resumes without refetching scrobbles.
@@ -52,7 +53,8 @@ Runs on the Workers free plan; limits and rationale in [cloudflare.md](cloudflar
 - Responsive grid of covers in rank order. Each tile: cover (placeholder if none), album, artist, `% · n tracks · ×full plays` (for `recent` sort, the completedAt date via `toLocaleDateString()` replaces `×full`). Tiles are buttons; clicking opens the album panel.
 - Album panel (`AlbumPanel`): native `<dialog>` via `showModal()` (centered, max 520px, scrollable body; full screen at ≤600px). Closes on Esc, backdrop click, or ×. Header = cover, artist, album, tile stats line; body = tracklist (number, name, `×N`, last played date; unplayed dimmed with "—") fetched from the album endpoint with the current from/to; "Loading…" while fetching, errors shown inline; footer link "Open on Last.fm ↗".
 - "From" / "To" `<input type="date">` next to the username form; either may be empty. Changing them re-ranks immediately via `GET` (no Last.fm calls). Dates are converted to unix seconds in the browser's local timezone; `to` covers the whole day.
-- "Sort" `<select>` ("Most plays" = `plays`, "Recently completed" = `recent`) next to the dates; changing it re-ranks via `GET`.
+- "Sort" `<select>` ("Most plays" = `plays`, "Recently completed" = `recent`, "By artist" = `artist`) next to the dates; changing it re-ranks via `GET`.
+- "By artist" sort: the client splits the flat list into per-artist sections (`<h2>artist · n songs</h2>`, n = sum of heard) each with its own grid, so every artist starts a new row.
 - URL `?user=&from=YYYY-MM-DD&to=YYYY-MM-DD&sort=recent` (empty/default ones omitted), read on load, so grids are shareable.
 
 ## Code layout

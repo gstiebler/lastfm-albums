@@ -128,16 +128,16 @@ test('computeAlbum: unbounded range equals no range', () => {
 });
 
 test('sortAlbums: pct desc, then length desc, then full desc', () => {
-  const a = { album: 'a', artist: 'x', pct: 1, length: 10, full: 1, completedAt: 0 };
-  const b = { album: 'b', artist: 'x', pct: 1, length: 12, full: 1, completedAt: 0 };
-  const c = { album: 'c', artist: 'x', pct: 1, length: 12, full: 5, completedAt: 0 };
-  const d = { album: 'd', artist: 'x', pct: 0.5, length: 20, full: 9, completedAt: 0 };
+  const a = { album: 'a', artist: 'x', heard: 0, pct: 1, length: 10, full: 1, completedAt: 0 };
+  const b = { album: 'b', artist: 'x', heard: 0, pct: 1, length: 12, full: 1, completedAt: 0 };
+  const c = { album: 'c', artist: 'x', heard: 0, pct: 1, length: 12, full: 5, completedAt: 0 };
+  const d = { album: 'd', artist: 'x', heard: 0, pct: 0.5, length: 20, full: 9, completedAt: 0 };
   assert.deepEqual(sortAlbums([a, d, b, c]).map((x) => x.album), ['c', 'b', 'a', 'd']);
 });
 
 test('sortAlbums: full ties fall back to artist/album order and do not mutate input', () => {
-  const a = { album: 'b', artist: 'x', pct: 1, length: 5, full: 1, completedAt: 0 };
-  const b = { album: 'a', artist: 'x', pct: 1, length: 5, full: 1, completedAt: 0 };
+  const a = { album: 'b', artist: 'x', heard: 0, pct: 1, length: 5, full: 1, completedAt: 0 };
+  const b = { album: 'a', artist: 'x', heard: 0, pct: 1, length: 5, full: 1, completedAt: 0 };
   const input = [a, b];
   assert.deepEqual(sortAlbums(input).map((x) => x.album), ['a', 'b']);
   assert.equal(input[0], a);
@@ -158,7 +158,7 @@ test('computeAlbum completedAt: ignores out-of-range and unmatched plays', () =>
 
 test('sortAlbums recent: pct first, then completedAt desc, then artist/album', () => {
   const al = (album: string, pct: number, completedAt: number) =>
-    ({ album, artist: 'x', pct, length: 5, full: 1, completedAt });
+    ({ album, artist: 'x', heard: 0, pct, length: 5, full: 1, completedAt });
   const input = [al('old', 1, 100), al('low', 0.5, 999), al('new', 1, 300), al('tieB', 1, 200), al('tieA', 1, 200)];
   assert.deepEqual(sortAlbums(input, 'recent').map((x) => x.album), ['new', 'tieA', 'tieB', 'old', 'low']);
   // default stays 'plays': ties on pct/length/full -> artist/album order
@@ -197,4 +197,15 @@ test('albumTracks: duplicate normalized names appear once (first occurrence)', (
     { name: 'A', plays: 1, lastPlayed: 10 },
     { name: 'b', plays: 0, lastPlayed: null },
   ]);
+});
+
+test('sortAlbums artist: groups by summed heard, plays order within, normalized names, name tiebreak', () => {
+  const al = (artist: string, album: string, heard: number, pct: number) =>
+    ({ artist, album, heard, pct, length: 10, full: 1, completedAt: 0 });
+  const input = [al('X', 'x1', 5, 0.5), al('Y', 'y1', 10, 1), al('x', 'x2', 4, 0.9)];
+  assert.deepEqual(sortAlbums(input, 'artist').map((a) => a.album), ['y1', 'x2', 'x1']);
+  const g = sortAlbums([al('Foo', 'a', 1, 1), al('Bar', 'b', 1, 1), al('foo ', 'c', 1, 0.5)], 'artist');
+  assert.deepEqual(g.map((a) => a.album), ['a', 'c', 'b']); // foo=2 beats bar=1
+  const tie = sortAlbums([al('b', '1', 3, 1), al('a', '2', 3, 1)], 'artist');
+  assert.deepEqual(tie.map((a) => a.album), ['2', '1']); // equal scores -> name
 });

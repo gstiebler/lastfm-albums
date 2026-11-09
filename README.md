@@ -6,6 +6,7 @@ See which albums you listened to in full. Enter a Last.fm username and get a gri
 
 - **Most plays** (default): % of the album's tracks you played, then album length (longer first), then full plays (play count of the least-played track you heard).
 - **Recently completed**: % heard, then the date of the album's least recently played song (newest first).
+- **By artist**: albums grouped by artist, artists with the most songs heard first (summed over their albums), albums within an artist in *Most plays* order.
 
 A date range (From / To) limits the ranking to plays within those dates. Username, dates and sort are kept in the URL, so grids can be shared.
 

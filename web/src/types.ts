@@ -14,7 +14,7 @@ export type Album = {
   url: string;
 };
 
-export type Sort = 'plays' | 'recent';
+export type Sort = 'plays' | 'recent' | 'artist';
 
 export type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 

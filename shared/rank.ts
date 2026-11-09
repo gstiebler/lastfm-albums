@@ -32,7 +32,7 @@ export type AlbumResult = {
   completedAt: number; // unix seconds: last play of the least recently played matched track
 };
 
-export type SortMethod = 'plays' | 'recent';
+export type SortMethod = 'plays' | 'recent' | 'artist';
 
 export function normalizeName(s: string): string {
   return String(s).trim().toLowerCase();
@@ -127,12 +127,20 @@ export function albumTracks(entry: AlbumPlays, tracklist: string[], range: Range
   return result;
 }
 
-export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'pct' | 'length' | 'full' | 'completedAt'>>(
+export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'heard' | 'pct' | 'length' | 'full' | 'completedAt'>>(
   albums: T[],
   method: SortMethod = 'plays',
 ): T[] {
-  return [...albums].sort((a, b) =>
+  const byAlbum = (a: T, b: T, m: 'plays' | 'recent') =>
     b.pct - a.pct ||
-    (method === 'recent' ? b.completedAt - a.completedAt : b.length - a.length || b.full - a.full) ||
-    a.artist.localeCompare(b.artist) || a.album.localeCompare(b.album));
+    (m === 'recent' ? b.completedAt - a.completedAt : b.length - a.length || b.full - a.full) ||
+    a.artist.localeCompare(b.artist) || a.album.localeCompare(b.album);
+  if (method !== 'artist') return [...albums].sort((a, b) => byAlbum(a, b, method));
+  const score = new Map<string, number>();
+  for (const a of albums) score.set(normalizeName(a.artist), (score.get(normalizeName(a.artist)) ?? 0) + a.heard);
+  return [...albums].sort((a, b) => {
+    const ka = normalizeName(a.artist);
+    const kb = normalizeName(b.artist);
+    return score.get(kb)! - score.get(ka)! || ka.localeCompare(kb) || byAlbum(a, b, 'plays');
+  });
 }

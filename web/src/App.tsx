@@ -29,6 +29,19 @@ async function api(user: string, method: 'GET' | 'POST', from = '', to = '', sor
   return res.json();
 }
 
+// Split an artist-sorted list into consecutive runs of the same artist, with the sum of heard per run.
+function artistRuns(albums: Album[]) {
+  const runs: { artist: string; songs: number; albums: Album[] }[] = [];
+  for (const a of albums) {
+    const last = runs.at(-1);
+    if (last && last.artist.trim().toLowerCase() === a.artist.trim().toLowerCase()) {
+      last.songs += a.heard;
+      last.albums.push(a);
+    } else runs.push({ artist: a.artist, songs: a.heard, albums: [a] });
+  }
+  return runs;
+}
+
 export default function App() {
   const params = new URLSearchParams(location.search);
   const initial = params.get('user') ?? '';
@@ -36,7 +49,7 @@ export default function App() {
   const [run, setRun] = useState({ user: initial, n: 0 }); // submitted username
   const [from, setFrom] = useState(params.get('from') ?? '');
   const [to, setTo] = useState(params.get('to') ?? '');
-  const [sort, setSort] = useState<Sort>(params.get('sort') === 'recent' ? 'recent' : 'plays');
+  const [sort, setSort] = useState<Sort>(params.get('sort') === 'recent' || params.get('sort') === 'artist' ? (params.get('sort') as Sort) : 'plays');
   const [ready, setReady] = useState(''); // user whose job is done
   const [status, setStatus] = useState('');
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
@@ -118,6 +131,8 @@ export default function App() {
     setRun((r) => ({ user: input.trim(), n: r.n + 1 })); // n: resubmitting the same user re-runs
   }
 
+  const tile = (a: Album) => <AlbumTile key={a.key} a={a} sort={sort} onOpen={() => setOpen(a)} />;
+
   return (
     <>
       <header>
@@ -134,6 +149,7 @@ export default function App() {
             <select name="sort" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               <option value="plays">Most plays</option>
               <option value="recent">Recently completed</option>
+              <option value="artist">By artist</option>
             </select>
           </label>
           <button type="submit">Show</button>
@@ -145,9 +161,14 @@ export default function App() {
             : error.message)}
         </p>
       </header>
-      <main id="grid">
-        {albums.map((a) => <AlbumTile key={a.key} a={a} sort={sort} onOpen={() => setOpen(a)} />)}
-      </main>
+      {sort === 'artist'
+        ? <main id="grid">{artistRuns(albums).map((r) => (
+            <section className="artist" key={r.albums[0].key}>
+              <h2>{r.artist} · {r.songs} songs</h2>
+              <div className="grid">{r.albums.map(tile)}</div>
+            </section>
+          ))}</main>
+        : <main id="grid" className="grid">{albums.map(tile)}</main>}
       {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} />}
     </>
   );

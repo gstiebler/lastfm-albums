@@ -164,7 +164,7 @@ export class UserDO extends DurableObject<Env> {
       return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range) } });
     }
     const sort = q.sort ?? 'plays';
-    if (sort !== 'plays' && sort !== 'recent') return fail(400, 'Invalid sort');
+    if (sort !== 'plays' && sort !== 'recent' && sort !== 'artist') return fail(400, 'Invalid sort');
     const albums: GridAlbum[] = [];
     for (const [key, e] of Object.entries(state.plays)) {
       const info = cache[key];

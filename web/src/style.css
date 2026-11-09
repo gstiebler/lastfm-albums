@@ -24,7 +24,10 @@ select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 button { padding: 10px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 #status { color: var(--muted); margin: 8px 0 0; }
 #error { color: var(--err); margin: 8px 0 0; }
-#grid { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+#grid { max-width: 1200px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+section.artist { margin-bottom: 24px; }
+.artist h2 { margin: 0 0 8px; font-size: 1.1rem; }
 .tile { display: block; width: 100%; padding: 0; text-align: left; color: inherit; font: inherit; background: var(--card); border-radius: 8px; overflow: hidden; }
 .tile:hover { outline: 2px solid var(--accent); }
 .cover { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #333; }
@@ -32,7 +35,7 @@ button { padding: 10px 16px; border: 0; border-radius: 6px; background: var(--ac
 .meta { padding: 8px; }
 .meta div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .album { font-weight: 600; }
-.artist, .stats { color: var(--muted); font-size: 0.85rem; }
+.meta .artist, .stats { color: var(--muted); font-size: 0.85rem; }
 #auth { margin: 0 0 12px; color: var(--muted); }
 a { color: var(--accent); }
 .panel { width: calc(100% - 32px); max-width: 520px; max-height: 85vh; padding: 0; border: 0; border-radius: 10px; background: var(--card); color: var(--fg); }
