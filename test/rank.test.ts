@@ -26,7 +26,7 @@ test('albumKey combines normalized artist and album', () => {
   assert.notEqual(albumKey('a', 'b'), albumKey('a', 'c'));
 });
 
-test('aggregate counts plays, skips nowplaying and empty albums, tracks lastUts', () => {
+test('aggregate counts plays, skips nowplaying and empty albums, lastUts includes empty albums', () => {
   const state = aggregate({ version: 2, lastUts: 0, plays: {} }, [
     scrobble('A', 'X', 'one', 100),
     scrobble('A', 'X', 'One - Remastered', 200),
@@ -34,7 +34,7 @@ test('aggregate counts plays, skips nowplaying and empty albums, tracks lastUts'
     scrobble('A', '', 'single', 300),
     { artist: { '#text': 'A' }, album: { '#text': 'X' }, name: 'live', '@attr': { nowplaying: 'true' } },
   ]);
-  assert.equal(state.lastUts, 200);
+  assert.equal(state.lastUts, 300); // album-less scrobbles count, so a refresh doesn't refetch them
   const key = albumKey('A', 'X');
   assert.deepEqual(Object.keys(state.plays), [key]);
   assert.equal(state.plays[key].artist, 'A');

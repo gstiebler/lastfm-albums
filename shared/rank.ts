@@ -67,6 +67,7 @@ export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): Scrobble
   for (const s of scrobbles) {
     if (s['@attr']?.nowplaying) continue;
     const artist = s.artist['#text'];
+    state.lastUts = Math.max(state.lastUts, Number(s.date!.uts)); // all scrobbles, so the next refresh doesn't refetch album-less ones
     const album = s.album['#text'];
     if (!album) continue;
     const key = albumKey(artist, album);
@@ -74,7 +75,6 @@ export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): Scrobble
     const track = (entry.tracks[normalizeTrack(s.name)] ??= { name: s.name, times: [] });
     const uts = Number(s.date!.uts);
     track.times.push(uts);
-    state.lastUts = Math.max(state.lastUts, uts);
   }
   return state;
 }
