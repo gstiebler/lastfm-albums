@@ -38,12 +38,25 @@ export function normalizeName(s: string): string {
   return String(s).trim().toLowerCase();
 }
 
+// Strips remaster/feat suffixes, accents and punctuation; idempotent. Live/remix/mono etc. stay distinct.
 export function normalizeTrack(s: string): string {
-  return normalizeName(s)
+  const n = normalizeName(s)
     .replace(/\s*[(\[][^)\]]*remaster[^)\]]*[)\]]/g, '')
+    .replace(/\s*[(\[]\s*(?:feat|ft|featuring|with)\b[^)\]]*[)\]]/g, '')
     .replace(/\s*[-–]\s*[^-–]*remaster[^-–]*$/, '')
+    .replace(/\s*[-–]\s*(?:feat|ft|featuring)\b.*$/, '')
+    .replace(/\s+(?:feat|ft|featuring)\b.*$/, '')
+    .normalize('NFKD').replace(/\p{M}/gu, '')
+    .replace(/['’]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
+  return n || normalizeName(s);
 }
+
+// Manual matches: normalized played name -> normalized tracklist name.
+export type Aliases = Record<string, string>;
+const keyOf = (tk: string, aliases: Aliases = {}) => aliases[normalizeTrack(tk)] ?? normalizeTrack(tk);
 
 export function albumKey(artist: string, album: string): string {
   return `${normalizeName(artist)}\u0000${normalizeName(album)}`;
@@ -78,20 +91,23 @@ export function needsLookup(entry: AlbumPlays): boolean {
 }
 
 // Returns {artist, album, heard, length, pct, full, completedAt} or null if excluded. Counts only plays within `range`.
-export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Range = {}): AlbumResult | null {
+export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Range = {}, aliases: Aliases = {}): AlbumResult | null {
   const { from = -Infinity, to = Infinity } = range;
-  const inRange = Object.entries(entry.tracks)
-    .map(([tk, t]) => [normalizeTrack(tk), t.times.filter((u) => u >= from && u <= to)] as const)
-    .filter(([, times]) => times.length > 0);
-  if (inRange.length < MIN_DISTINCT_TRACKS) return null;
+  const inRange = new Map<string, number[]>();
+  for (const [tk, t] of Object.entries(entry.tracks)) {
+    const times = t.times.filter((u) => u >= from && u <= to);
+    const k = keyOf(tk, aliases);
+    if (times.length) inRange.set(k, [...(inRange.get(k) ?? []), ...times]);
+  }
+  if (inRange.size < MIN_DISTINCT_TRACKS) return null;
   const keys = new Set(tracklist.map(normalizeTrack));
   if (keys.size <= 1) return null;
   const counts = new Map<string, number>();
   const last = new Map<string, number>();
   for (const [k, times] of inRange) {
     if (!keys.has(k)) continue;
-    counts.set(k, (counts.get(k) ?? 0) + times.length);
-    last.set(k, Math.max(last.get(k) ?? -Infinity, ...times));
+    counts.set(k, times.length);
+    last.set(k, Math.max(...times));
   }
   if (counts.size === 0) return null;
   return {
@@ -108,11 +124,11 @@ export function computeAlbum(entry: AlbumPlays, tracklist: string[], range: Rang
 export type TrackResult = { name: string; plays: number; lastPlayed: number | null };
 
 // Tracklist in album order with in-range play count and last play; duplicate normalized names appear once.
-export function albumTracks(entry: AlbumPlays, tracklist: string[], range: Range = {}): TrackResult[] {
+export function albumTracks(entry: AlbumPlays, tracklist: string[], range: Range = {}, aliases: Aliases = {}): TrackResult[] {
   const { from = -Infinity, to = Infinity } = range;
   const plays = new Map<string, number[]>();
   for (const [tk, t] of Object.entries(entry.tracks)) {
-    const k = normalizeTrack(tk);
+    const k = keyOf(tk, aliases);
     plays.set(k, [...(plays.get(k) ?? []), ...t.times.filter((u) => u >= from && u <= to)]);
   }
   const seen = new Set<string>();
@@ -125,6 +141,23 @@ export function albumTracks(entry: AlbumPlays, tracklist: string[], range: Range
     result.push({ name, plays: times.length, lastPlayed: times.length ? Math.max(...times) : null });
   }
   return result;
+}
+
+export type ExtraTrack = { name: string; plays: number; track: string | null };
+
+// Played tracks (with in-range plays) that aren't on the tracklist; `track` is the tracklist name a manual match maps it to.
+export function extraTracks(entry: AlbumPlays, tracklist: string[], range: Range = {}, aliases: Aliases = {}): ExtraTrack[] {
+  const { from = -Infinity, to = Infinity } = range;
+  const keys = new Set(tracklist.map(normalizeTrack));
+  const result: ExtraTrack[] = [];
+  for (const [tk, t] of Object.entries(entry.tracks)) {
+    const k = normalizeTrack(tk);
+    const plays = t.times.filter((u) => u >= from && u <= to).length;
+    if (!plays || keys.has(k)) continue;
+    const target = aliases[k];
+    result.push({ name: t.name, plays, track: (target && tracklist.find((n) => normalizeTrack(n) === target)) || null });
+  }
+  return result.sort((a, b) => b.plays - a.plays);
 }
 
 export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'heard' | 'pct' | 'length' | 'full' | 'completedAt'>>(

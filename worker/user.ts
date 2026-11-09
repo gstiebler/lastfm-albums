@@ -1,8 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getRecentTracksPage, getAlbumInfo } from '../shared/lastfm.ts';
 import type { Config, LastfmError, Session } from '../shared/lastfm.ts';
-import { aggregate, getTracklist, needsLookup, computeAlbum, albumTracks, sortAlbums } from '../shared/rank.ts';
-import type { AlbumResult, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
+import { aggregate, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums } from '../shared/rank.ts';
+import type { AlbumResult, Aliases, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
 import { shared } from './env.ts';
 import type { Env } from './env.ts';
 import type { AlbumCacheEntry } from './shared.ts';
@@ -27,12 +27,14 @@ const expand = (rows: Compact[]): Scrobble[] =>
 // One instance per Last.fm user (lowercase name). Fetches in alarm chunks; ranks in memory.
 export class UserDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql;
+  matches?: Record<string, Aliases>; // manual matches per albumKey, lazily loaded
   data?: Data; // aggregated scrobbles + album cache; rebuilt from storage after eviction
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, data TEXT)');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS matches (album TEXT, played TEXT, track TEXT, PRIMARY KEY (album, played))');
   }
 
   private get<T>(k: string): T | undefined {
@@ -42,6 +44,20 @@ export class UserDO extends DurableObject<Env> {
 
   private set(values: Record<string, unknown>): void {
     for (const [k, v] of Object.entries(values)) this.sql.exec('INSERT OR REPLACE INTO meta VALUES (?, ?)', k, JSON.stringify(v ?? null));
+  }
+
+  private isOwner(session: Session | null): boolean {
+    return !!session && session.name.toLowerCase() === this.get<string>('user')?.toLowerCase();
+  }
+
+  private aliases(key: string): Aliases {
+    if (!this.matches) {
+      this.matches = {};
+      for (const r of this.sql.exec('SELECT album, played, track FROM matches')) {
+        (this.matches[r.album as string] ??= {})[normalizeTrack(r.played as string)] = normalizeTrack(r.track as string);
+      }
+    }
+    return this.matches[key] ?? {};
   }
 
   async start(user: string, session: Session | null): Promise<{ status: Status | undefined }> {
@@ -144,7 +160,7 @@ export class UserDO extends DurableObject<Env> {
   async read(session: Session | null, album: boolean, q: { key: string | null; from: string | null; to: string | null; sort: string | null }): Promise<Reply> {
     const status = this.get<Status>('status');
     if (!status) return fail(404, 'No job for this user');
-    if (this.get('private') && session?.name.toLowerCase() !== this.get<string>('user')!.toLowerCase()) return fail(403, 'This profile is private');
+    if (this.get('private') && !this.isOwner(session)) return fail(403, 'This profile is private');
     const progress = this.get<Progress>('progress');
     const partial = status === 'running' && progress?.phase === 'albums'; // album cache is usable while looking up
     if (album && status !== 'done' && !partial) return fail(404, 'Job not done');
@@ -161,16 +177,39 @@ export class UserDO extends DurableObject<Env> {
       const entry = state.plays[key];
       const info = cache[key];
       if (!entry || !info) return fail(404, 'Unknown album');
-      return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range) } });
+      const aliases = this.aliases(key);
+      return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range, aliases),
+        extra: extraTracks(entry, info.tracks, range, aliases), editable: this.isOwner(session) } });
     }
     const sort = q.sort ?? 'plays';
     if (sort !== 'plays' && sort !== 'recent' && sort !== 'artist') return fail(400, 'Invalid sort');
     const albums: GridAlbum[] = [];
     for (const [key, e] of Object.entries(state.plays)) {
       const info = cache[key];
-      const r = info && computeAlbum(e, info.tracks, range);
+      const r = info && computeAlbum(e, info.tracks, range, this.aliases(key));
       if (r) albums.push({ ...r, key, image: info.image, url: info.url });
     }
     return ok({ status, ...(partial && { progress }), albums: sortAlbums(albums, sort) });
+  }
+
+  // POST /api/grid/:user/match: map a played track to a tracklist track (null removes the mapping). Owner only.
+  async match(session: Session | null, b: { key: string; played: string; track: string | null }): Promise<Reply> {
+    if (!this.isOwner(session)) return fail(403, 'Only the profile owner can edit matches');
+    const { state, cache } = await this.load();
+    const entry = state.plays[b.key];
+    const info = cache[b.key];
+    if (!entry || !info) return fail(404, 'Unknown album');
+    const played = normalizeTrack(b.played);
+    if (!(played in entry.tracks)) return fail(400, 'Unknown played track');
+    if (b.track !== null && !info.tracks.includes(b.track)) return fail(400, 'Unknown tracklist track');
+    const aliases = this.aliases(b.key);
+    if (b.track === null) {
+      this.sql.exec('DELETE FROM matches WHERE album = ? AND played = ?', b.key, b.played);
+      delete aliases[played];
+    } else {
+      this.sql.exec('INSERT OR REPLACE INTO matches VALUES (?, ?, ?)', b.key, b.played, b.track);
+      (this.matches![b.key] ??= {})[played] = normalizeTrack(b.track);
+    }
+    return ok({ status: 'ok' });
   }
 }

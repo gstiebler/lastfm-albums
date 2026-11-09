@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, albumTracks, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -208,4 +208,74 @@ test('sortAlbums artist: groups by summed heard, plays order within, normalized 
   assert.deepEqual(g.map((a) => a.album), ['a', 'c', 'b']); // foo=2 beats bar=1
   const tie = sortAlbums([al('b', '1', 3, 1), al('a', '2', 3, 1)], 'artist');
   assert.deepEqual(tie.map((a) => a.album), ['2', '1']); // equal scores -> name
+});
+
+test('normalizeTrack: accents, case, whitespace, punctuation', () => {
+  assert.equal(normalizeTrack('Café'), normalizeTrack('Cafe'));
+  assert.equal(normalizeTrack('  Hello   World '), 'hello world');
+  assert.equal(normalizeTrack("Don't Stop"), normalizeTrack('Dont Stop'));
+  assert.equal(normalizeTrack('Rock & Roll'), 'rock and roll');
+  assert.equal(normalizeTrack('Rock And Roll'), 'rock and roll');
+  assert.equal(normalizeTrack('Hey, You!'), 'hey you');
+});
+
+test('normalizeTrack: strips feat/ft/with suffixes', () => {
+  for (const s of ['Song (feat. X)', 'Song [ft. X]', 'Song (featuring X)', 'Song (with X)', 'Song - feat. X', 'Song feat. X', 'Song ft. X', 'Song featuring X', 'Song (Remastered 2011) (feat. X)']) {
+    assert.equal(normalizeTrack(s), 'song', s);
+  }
+});
+
+test('normalizeTrack: kept distinct', () => {
+  const base = normalizeTrack('Song');
+  for (const s of ['Song (Live)', 'Song - Remix', 'Song - Mono']) assert.notEqual(normalizeTrack(s), base, s);
+  assert.equal(normalizeTrack('Dancing with Myself'), 'dancing with myself');
+});
+
+test('normalizeTrack: idempotent, never empty', () => {
+  for (const s of ['Café (feat. X)', "Don't Stop - Remastered 2011", 'Rock & Roll', 'Song (Live)', 'Money [2011 Remaster]', '???', '...', 'Song feat. A (with B)']) {
+    assert.equal(normalizeTrack(normalizeTrack(s)), normalizeTrack(s), s);
+    assert.notEqual(normalizeTrack(s), '', s);
+  }
+  assert.equal(normalizeTrack('???'), '???');
+});
+
+test('computeAlbum with aliases: mapped track counts toward heard/full/completedAt', () => {
+  const e = entry({ a: [10], b: [20], zzz: [30, 40] });
+  assert.equal(computeAlbum(e, ['a', 'b', 'c'])!.heard, 2);
+  const r = computeAlbum(e, ['a', 'b', 'c'], {}, { zzz: 'c' })!;
+  assert.equal(r.heard, 3);
+  assert.equal(r.full, 1);
+  assert.equal(r.completedAt, 10);
+});
+
+test('computeAlbum with aliases: variants mapped to one song sum plays, no distinct inflation', () => {
+  const e = entry({ a: [10], v1: [20], v2: [30] });
+  assert.equal(computeAlbum(e, ['a', 'c', 'd'], {}, { v1: 'c', v2: 'c' }), null); // 2 distinct keys < 3
+  const r = computeAlbum(entry({ a: [10], b: [15], v1: [20], v2: [30] }), ['a', 'b', 'c'], {}, { v1: 'c', v2: 'c' })!;
+  assert.equal(r.heard, 3);
+  assert.equal(albumTracks(entry({ v1: [20], v2: [30] }), ['c'], {}, { v1: 'c', v2: 'c' })[0].plays, 2);
+});
+
+test('computeAlbum: unmapped extra does not count', () => {
+  const r = computeAlbum(entry({ a: [10], b: [20], x: [30], y: [40] }), ['a', 'b', 'c'])!;
+  assert.equal(r.heard, 2);
+});
+
+test('albumTracks with aliases', () => {
+  const e = entry({ a: [10], zzz: [30, 50] });
+  assert.deepEqual(albumTracks(e, ['a', 'C'], {}, { zzz: 'c' }), [
+    { name: 'a', plays: 1, lastPlayed: 10 },
+    { name: 'C', plays: 2, lastPlayed: 50 },
+  ]);
+});
+
+test('extraTracks: only non-tracklist, respects range, fills mapped track, sorted by plays', () => {
+  const e = entry({ a: [10], x: [5], y: [20, 30], z: [100] });
+  assert.deepEqual(extraTracks(e, ['A', 'B']), [
+    { name: 'y', plays: 2, track: null },
+    { name: 'x', plays: 1, track: null },
+    { name: 'z', plays: 1, track: null },
+  ]);
+  assert.deepEqual(extraTracks(e, ['A', 'B'], { from: 15, to: 50 }), [{ name: 'y', plays: 2, track: null }]);
+  assert.deepEqual(extraTracks(e, ['A', 'B'], { from: 15, to: 50 }, { y: 'b' }), [{ name: 'y', plays: 2, track: 'B' }]);
 });

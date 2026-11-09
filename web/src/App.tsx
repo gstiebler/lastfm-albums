@@ -55,6 +55,7 @@ export default function App() {
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [open, setOpen] = useState<Album | null>(null);
+  const [version, setVersion] = useState(0); // bumped after a manual match to re-rank
   const runId = useRef(0);
   const query = useRef({ from, to, sort }); // latest params for the poll loop
   query.current = { from, to, sort };
@@ -116,6 +117,7 @@ export default function App() {
       if (data.status === 'done') {
         setStatus(`${data.albums.length} albums`);
         setAlbums(data.albums);
+        setOpen((o) => o && (data.albums.find((x) => x.key === o.key) ?? o));
       } else if (data.status === 'error') {
         setStatus('');
         setError(data);
@@ -124,7 +126,7 @@ export default function App() {
       if (!stale) setError({ message: err.message });
     });
     return () => { stale = true; };
-  }, [ready, from, to, sort]);
+  }, [ready, from, to, sort, version]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -169,7 +171,7 @@ export default function App() {
             </section>
           ))}</main>
         : <main id="grid" className="grid">{albums.map(tile)}</main>}
-      {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} />}
+      {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} onChange={() => setVersion((v) => v + 1)} />}
     </>
   );
 }
