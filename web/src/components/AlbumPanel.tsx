@@ -67,12 +67,6 @@ export default function AlbumPanel({ user, a, sort, from, to, onClose, onChange 
               </li>
             ))}
           </ol>
-          {detail.tracks.some((t) => !t.plays) && (
-            <section>
-              <h3>Not played</h3>
-              <ul className="extras">{detail.tracks.filter((t) => !t.plays).map((t, i) => <li key={i}>{t.name}</li>)}</ul>
-            </section>
-          )}
           {detail.extra.length > 0 && (
             <section>
               <h3>Played, not on tracklist</h3>
