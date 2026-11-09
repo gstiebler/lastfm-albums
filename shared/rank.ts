@@ -196,7 +196,7 @@ export function sortAlbums<T extends Pick<AlbumResult, 'artist' | 'album' | 'hea
   for (const a of albums) score.set(normalizeArtist(a.artist), (score.get(normalizeArtist(a.artist)) ?? 0) + a.heard);
   return [...albums].sort((a, b) => {
     const ka = normalizeArtist(a.artist);
-    const kb = normalizeName(b.artist);
+    const kb = normalizeArtist(b.artist);
     return score.get(kb)! - score.get(ka)! || ka.localeCompare(kb) || byAlbum(a, b, 'plays');
   });
 }
