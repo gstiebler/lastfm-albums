@@ -13,6 +13,12 @@ export class SharedDO extends DurableObject<Env> {
     super(ctx, env);
     this.sql.exec('CREATE TABLE IF NOT EXISTS albums (key TEXT PRIMARY KEY, info TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS sessions (sid TEXT PRIMARY KEY, name TEXT, key TEXT, created INTEGER)');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY)');
+    if (!this.sql.exec("SELECT 1 FROM migrations WHERE id = 'retry-empty-albums'").toArray().length) {
+      // One-off: misses/empty tracklists cached before the base-name fallback get looked up again.
+      this.sql.exec("DELETE FROM albums WHERE info = 'null' OR json_array_length(info, '$.tracks') <= 1");
+      this.sql.exec("INSERT INTO migrations VALUES ('retry-empty-albums')");
+    }
   }
 
   // Returns only the cached keys (misses are cached as null).

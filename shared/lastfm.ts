@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AlbumInfo, Scrobble } from './rank.ts';
+import { getTracklist, type AlbumInfo, type Scrobble } from './rank.ts';
 
 export type LastfmError = Error & { code?: number };
 export type Session = { name: string; key: string };
@@ -70,8 +70,22 @@ export async function getRecentTracksPage(
   return { tracks: [data.recenttracks.track ?? []].flat(), totalPages: Number(data.recenttracks['@attr'].totalPages) };
 }
 
+// Album name without edition suffixes: "X (2015 Remaster)", "X [Deluxe]", "X - Remastered" -> "X".
+export function baseAlbumName(s: string): string {
+  return s.replace(/(?:\s*[(\[][^)\]]*[)\]])+\s*$/, '').replace(/\s+[-–]\s+[^-–]*$/, '').trim() || s;
+}
+
 // Returns album.getInfo `album` object, or null when Last.fm doesn't know it (error 6).
+// If that has no tracklist, retries with the edition suffix stripped (one extra fetch).
 export async function getAlbumInfo(cfg: Config, artist: string, album: string): Promise<AlbumInfo | null> {
+  const info = await albumGetInfo(cfg, artist, album);
+  const base = baseAlbumName(album);
+  if (base === album || getTracklist(info).length > 1) return info;
+  const alt = await albumGetInfo(cfg, artist, base);
+  return getTracklist(alt).length > 1 ? alt : info;
+}
+
+async function albumGetInfo(cfg: Config, artist: string, album: string): Promise<AlbumInfo | null> {
   try {
     return (await call(cfg, 'album.getInfo', { artist, album, autocorrect: 1 })).album;
   } catch (err) {

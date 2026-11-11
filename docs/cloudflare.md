@@ -39,6 +39,7 @@ SQLite tables:
 - `pages(id INTEGER PRIMARY KEY, data TEXT)`: compact scrobbles of one Last.fm page, `[[artist, album, track, uts], …]`.
 - `matches(album, played, track, PRIMARY KEY (album, played))`: manual track matches, one row per mapping (`album` = albumKey, raw names). Loaded lazily into memory, written through on `POST …/match`.
 - Albums with 3+ distinct played tracks are shown even when none match the tracklist (heard 0), so they can be matched manually.
+- `album.getInfo` with no tracklist is retried once with the edition suffix stripped ("X (2015 Remaster)" -> "X"); SharedDO migration `retry-empty-albums` purged cached misses/empty tracklists so they get retried.
 - `albumKey` normalizes the artist part with `normalizeArtist` (accents, hyphens, punctuation); old match keys are recomputed and migrated on load.
 
 Flow:
