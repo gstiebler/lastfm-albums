@@ -59,6 +59,7 @@ export default function App() {
   const [debug, setDebug] = useState(false);
   const [version, setVersion] = useState(0); // bumped after a manual match to re-rank
   const runId = useRef(0);
+  const shown = useRef(''); // user whose albums are in the grid
   const query = useRef({ from, to, sort }); // latest params for the poll loop
   query.current = { from, to, sort };
 
@@ -67,7 +68,8 @@ export default function App() {
     const { user } = run;
     if (!user) return;
     const id = ++runId.current;
-    setAlbums([]);
+    if (user !== shown.current) setAlbums([]); // re-running the same user keeps the grid until fresh data arrives
+    shown.current = user;
     setError(null);
     setReady('');
     setStatus('Starting…');
