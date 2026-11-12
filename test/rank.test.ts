@@ -351,7 +351,7 @@ test('recordingAliases: played track whose recording is on the tracklist maps to
   ]);
   const e = state.plays[albumKey('A', 'X')];
   const info = { tracks: ['Part I', 'Two', 'Three'], recordings: ['r1', 'r2', 'r3'], image: '', url: '' };
-  assert.deepEqual(recordingAliases(e, info), { 'pt 1': 'part i', two: 'two' });
+  assert.deepEqual(recordingAliases(e, info), { 'pt 1': 'part i' });
   assert.deepEqual(recordingAliases(e, { ...info, recordings: undefined }), {});
   assert.deepEqual(recordingAliases(e, null), {});
   assert.equal(computeAlbum(e, info.tracks, {}, recordingAliases(e, info))!.heard, 2);

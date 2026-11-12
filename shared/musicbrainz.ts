@@ -23,7 +23,7 @@ export async function getRelease(cfg: Config, mbid: string): Promise<AlbumEntry 
     if (res.status === 404) return null;
     if (res.ok) {
       const r: any = await res.json();
-      const tracks: any[] = r.media.flatMap((m: any) => m.tracks);
+      const tracks: any[] = r.media.flatMap((m: any) => m.tracks ?? []);
       return {
         tracks: tracks.map((t) => t.title),
         recordings: tracks.map((t) => t.recording.id),

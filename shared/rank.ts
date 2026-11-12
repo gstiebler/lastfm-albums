@@ -108,7 +108,9 @@ export const cacheKey = (key: string, e: AlbumPlays): string => { const r = rele
 export function recordingAliases(entry: AlbumPlays | undefined, info: AlbumEntry | null | undefined): Aliases {
   const out: Aliases = {};
   if (!entry || !info?.recordings) return out;
+  const names = new Set(info.tracks.map(normalizeTrack));
   for (const [played, t] of Object.entries(entry.tracks)) {
+    if (names.has(played)) continue; // name already matches; an id alias could only mis-map duplicates
     const i = t.mbid ? info.recordings.indexOf(t.mbid) : -1;
     if (i >= 0) out[played] = normalizeTrack(info.tracks[i]);
   }
