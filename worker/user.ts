@@ -335,7 +335,11 @@ export class UserDO extends DurableObject<Env> {
       this.sql.exec('DELETE FROM overrides WHERE album = ?', b.key);
       this.override(b.key); // ensure loaded
       delete this.overrides![b.key];
-      this.data = undefined; // reload rebuilds the cache entry from the default key
+      const k = this.cacheKeyOf(b.key, entry);
+      const found = (await shared(this.env).getAlbums([k]))[k];
+      const info = found !== undefined ? found : await this.lookup({ apiKey: this.env.LASTFM_API_KEY, secret: this.env.LASTFM_SHARED_SECRET, fetches: 0 }, b.key, entry);
+      if (found === undefined) await shared(this.env).putAlbums({ [k]: info });
+      cache[b.key] = info; // default tracklist again, looked up now if it wasn't cached
     }
     this.sql.exec('DELETE FROM matches WHERE album = ?', b.key);
     delete this.matches?.[b.key];
