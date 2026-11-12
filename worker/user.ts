@@ -43,6 +43,7 @@ const lastfmEntry = (info: Awaited<ReturnType<typeof getAlbumInfo>>): AlbumCache
 export class UserDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql;
   matches?: Record<string, Aliases>; // manual matches per albumKey, lazily loaded
+  overrides?: Record<string, { artist: string; name: string }>; // owner-chosen Last.fm album per albumKey, lazily loaded
   data?: Data; // aggregated scrobbles + album cache; rebuilt from storage after eviction
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -50,6 +51,7 @@ export class UserDO extends DurableObject<Env> {
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, data TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS matches (album TEXT, played TEXT, track TEXT, PRIMARY KEY (album, played))');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS overrides (album TEXT PRIMARY KEY, artist TEXT, name TEXT)');
   }
 
   private get<T>(k: string): T | undefined {
@@ -85,6 +87,16 @@ export class UserDO extends DurableObject<Env> {
     }
     return this.matches[key] ?? {};
   }
+
+  private override(key: string) {
+    if (!this.overrides) {
+      this.overrides = {};
+      for (const r of this.sql.exec('SELECT album, artist, name FROM overrides').toArray()) this.overrides[r.album as string] = { artist: r.artist as string, name: r.name as string };
+    }
+    return this.overrides[key];
+  }
+
+  private cacheKeyOf = (key: string, e: AlbumPlays) => cacheKey(key, e, this.override(key));
 
   // Manual matches of this (Last.fm) instance, to seed a ListenBrainz instance.
   exportMatches(): { album: string; played: string; track: string }[] {
@@ -176,7 +188,7 @@ export class UserDO extends DurableObject<Env> {
     try {
       for (let i = 0; i < todo.length && cfg.fetches! + CONCURRENCY <= BUDGET; i += CONCURRENCY) {
         const group = todo.slice(i, i + CONCURRENCY);
-        const rs = await Promise.allSettled(group.map(([, e]) => this.lookup(cfg, e)));
+        const rs = await Promise.allSettled(group.map(([k, e]) => this.lookup(cfg, k, e)));
         rs.forEach((r, j) => {
           if (r.status === 'fulfilled') fetched[group[j][0]] = r.value;
         });
@@ -185,15 +197,17 @@ export class UserDO extends DurableObject<Env> {
       }
     } finally {
       Object.assign(cache, fetched);
-      await shared(this.env).putAlbums(Object.fromEntries(Object.entries(fetched).map(([k, v]) => [cacheKey(k, state.plays[k]), v])));
+      await shared(this.env).putAlbums(Object.fromEntries(Object.entries(fetched).map(([k, v]) => [this.cacheKeyOf(k, state.plays[k]), v])));
     }
     const left = todo.length - Object.keys(fetched).length;
     this.set({ progress: { phase: 'albums', done: total - left, total } });
     if (!left) this.set({ status: 'done', lastUts: state.lastUts });
   }
 
-  // MusicBrainz release when the listens carry one (falling back to Last.fm if it's unknown there), else Last.fm.
-  private async lookup(cfg: Config, e: AlbumPlays): Promise<AlbumCacheEntry> {
+  // The override's Last.fm album if set; else the MusicBrainz release when the listens carry one (falling back to Last.fm if it's unknown there), else Last.fm.
+  private async lookup(cfg: Config, key: string, e: AlbumPlays): Promise<AlbumCacheEntry> {
+    const o = this.override(key);
+    if (o) return lastfmEntry(await getAlbumInfo(cfg, o.artist, o.name));
     const mbid = releaseOf(e);
     return (mbid && (await getRelease(cfg, mbid))) || lastfmEntry(await getAlbumInfo(cfg, e.artist, e.album));
   }
@@ -217,9 +231,9 @@ export class UserDO extends DurableObject<Env> {
       aggregate(state, expand(JSON.parse(row.data as string)));
     }
     const keys = Object.entries(state.plays).filter(([, e]) => needsLookup(e)).map(([k]) => k);
-    const found = await shared(this.env).getAlbums(keys.map((k) => cacheKey(k, state.plays[k])));
+    const found = await shared(this.env).getAlbums(keys.map((k) => this.cacheKeyOf(k, state.plays[k])));
     const cache: Record<string, AlbumCacheEntry> = {}; // by albumKey
-    for (const k of keys) if (cacheKey(k, state.plays[k]) in found) cache[k] = found[cacheKey(k, state.plays[k])];
+    for (const k of keys) if (this.cacheKeyOf(k, state.plays[k]) in found) cache[k] = found[this.cacheKeyOf(k, state.plays[k])];
     return (this.data = { state, cache });
   }
 
@@ -246,7 +260,8 @@ export class UserDO extends DurableObject<Env> {
       if (!entry || !info) return fail(404, 'Unknown album');
       const aliases = this.effective(key, entry, info);
       return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range, aliases),
-        extra: extraTracks(entry, info.tracks, range, aliases), editable: this.isOwner(session) } });
+        extra: extraTracks(entry, info.tracks, range, aliases), editable: this.isOwner(session),
+        override: this.override(key) ? { artist: this.override(key).artist, album: this.override(key).name } : null } });
     }
     const sort = q.sort ?? 'plays';
     if (sort !== 'plays' && sort !== 'recent' && sort !== 'artist') return fail(400, 'Invalid sort');
@@ -297,6 +312,33 @@ export class UserDO extends DurableObject<Env> {
       this.sql.exec('INSERT OR REPLACE INTO matches VALUES (?, ?, ?)', b.key, b.played, b.track);
       (this.matches![b.key] ??= {})[played] = normalizeTrack(b.track);
     }
+    return ok({ status: 'ok' });
+  }
+
+  // POST /api/grid/:user/override: use another Last.fm album's tracklist for this album (artist/album null resets). Owner only.
+  async setOverride(session: Session | null, b: { key: string; artist: string | null; album: string | null }): Promise<Reply> {
+    if (!this.isOwner(session)) return fail(403, 'Only the profile owner can edit matches');
+    const { state, cache } = await this.load();
+    const entry = state.plays[b.key];
+    if (!entry) return fail(404, 'Unknown album');
+    if (b.artist !== null && b.album !== null) {
+      const cfg: Config = { apiKey: this.env.LASTFM_API_KEY, secret: this.env.LASTFM_SHARED_SECRET, fetches: 0 };
+      const info = lastfmEntry(await getAlbumInfo(cfg, b.artist, b.album));
+      if (!info || info.tracks.length <= 1) return fail(400, 'Album not found on Last.fm (or no tracklist)');
+      const o = { artist: b.artist, name: b.album };
+      await shared(this.env).putAlbums({ [cacheKey(b.key, entry, o)]: info });
+      this.sql.exec('INSERT OR REPLACE INTO overrides VALUES (?, ?, ?)', b.key, o.artist, o.name);
+      this.override(b.key); // ensure loaded
+      this.overrides![b.key] = o;
+      cache[b.key] = info;
+    } else {
+      this.sql.exec('DELETE FROM overrides WHERE album = ?', b.key);
+      this.override(b.key); // ensure loaded
+      delete this.overrides![b.key];
+      this.data = undefined; // reload rebuilds the cache entry from the default key
+    }
+    this.sql.exec('DELETE FROM matches WHERE album = ?', b.key);
+    delete this.matches?.[b.key];
     return ok({ status: 'ok' });
   }
 }

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
+import { parseLastfmUrl } from '../../../shared/rank.ts';
 import { statsLine } from './AlbumTile.tsx';
 import type { Album, AlbumDetail, Sort, Source } from '../types.ts';
 
@@ -8,6 +10,8 @@ export default function AlbumPanel({ user, source, a, sort, from, to, onClose, o
   const dialog = useRef<HTMLDialogElement>(null);
   const [detail, setDetail] = useState<AlbumDetail | null>(null);
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [formError, setFormError] = useState('');
   const [version, setVersion] = useState(0); // bumped after a match edit to refetch
 
   useEffect(() => { dialog.current!.showModal(); }, []);
@@ -38,6 +42,27 @@ export default function AlbumPanel({ user, source, a, sort, from, to, onClose, o
     if (!res.ok) { setError((await res.json()).message); return; }
     setVersion((v) => v + 1);
     onChange();
+  }
+
+  async function setOverride(artist: string | null, album: string | null) {
+    const res = await fetch(`/api/grid/${encodeURIComponent(user)}/override${source === 'lb' ? '?source=lb' : ''}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: a.key, artist, album }),
+    });
+    if (!res.ok) { setFormError((await res.json()).message); return; }
+    setFormError('');
+    setEditing(false);
+    setVersion((v) => v + 1);
+    onChange();
+  }
+
+  function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const artist = (f.get('artist') as string).trim();
+    const album = (f.get('album') as string).trim();
+    const url = parseLastfmUrl(album);
+    return setOverride(url?.artist ?? artist, url?.album ?? album);
   }
 
   return (
@@ -90,6 +115,21 @@ export default function AlbumPanel({ user, source, a, sort, from, to, onClose, o
         </>}
       </div>
       <footer className="panel-foot">
+        {detail?.override && (
+          <div className="stats">
+            Matched to Last.fm album: {detail.override.artist} – {detail.override.album}{' '}
+            <button type="button" className="link" onClick={() => setOverride(null, null)}>Reset</button>
+          </div>
+        )}
+        {detail?.editable && !editing && <button type="button" className="link" onClick={() => setEditing(true)}>Wrong album?</button>}
+        {detail?.editable && editing && (
+          <form className="override-form" onSubmit={submit}>
+            <input name="artist" placeholder="Artist" defaultValue={detail.override?.artist ?? detail.artist} required />
+            <input name="album" placeholder="Album (or Last.fm album URL)" defaultValue={detail.override?.album ?? detail.album} required />
+            {formError && <p className="panel-error" role="alert">{formError}</p>}
+            <button type="submit">Use this album</button>
+          </form>
+        )}
         <a href={a.url} target="_blank" rel="noopener">Open on {new URL(a.url).hostname.includes('musicbrainz') ? 'MusicBrainz' : 'Last.fm'} ↗</a>
       </footer>
     </dialog>

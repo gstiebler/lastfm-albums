@@ -1,6 +1,6 @@
 export type Track = { name: string; plays: number; lastPlayed: number | null };
 export type Extra = { name: string; plays: number; track: string | null };
-export type AlbumDetail = { artist: string; album: string; image: string; url: string; tracks: Track[]; extra: Extra[]; editable: boolean };
+export type AlbumDetail = { artist: string; album: string; image: string; url: string; tracks: Track[]; extra: Extra[]; editable: boolean; override: { artist: string; album: string } | null };
 
 export type Album = {
   key: string;

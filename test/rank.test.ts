@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeArtist, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, releaseOf, cacheKey, recordingAliases, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, releaseOf, cacheKey, parseLastfmUrl, recordingAliases, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -340,6 +340,13 @@ test('aggregate stores recording mbids per track and release counts per album', 
   assert.equal(releaseOf(e), 'relA');
   assert.equal(cacheKey(albumKey('A', 'X'), e), 'mb:relA');
   assert.equal(cacheKey('k', { artist: 'A', album: 'X', tracks: {} }), 'k');
+  assert.equal(cacheKey(albumKey('A', 'X'), e, { artist: 'B', name: 'Y' }), albumKey('B', 'Y')); // override wins over the release
+});
+
+test('parseLastfmUrl', () => {
+  assert.deepEqual(parseLastfmUrl('https://www.last.fm/music/Sigur+R%C3%B3s/()?x=1'), { artist: 'Sigur Rós', album: '()' });
+  assert.deepEqual(parseLastfmUrl('https://www.last.fm/pt/music/Daft+Punk/Random+Access+Memories'), { artist: 'Daft Punk', album: 'Random Access Memories' });
+  assert.equal(parseLastfmUrl('Random Access Memories'), null);
 });
 
 test('recordingAliases: played track whose recording is on the tracklist maps to its name', () => {

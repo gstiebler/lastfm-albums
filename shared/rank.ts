@@ -101,8 +101,20 @@ export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): Scrobble
 // The album's most listened release mbid, if any.
 export const releaseOf = (e: AlbumPlays): string | undefined => Object.entries(e.releases ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0];
 
-// Album cache key: the MusicBrainz release when known, else the name-based albumKey.
-export const cacheKey = (key: string, e: AlbumPlays): string => { const r = releaseOf(e); return r ? `mb:${r}` : key; };
+// Album cache key: the owner's Last.fm override if set, else the MusicBrainz release when known, else the name-based albumKey.
+export const cacheKey = (key: string, e: AlbumPlays, override?: { artist: string; name: string }): string => {
+  if (override) return albumKey(override.artist, override.name);
+  const r = releaseOf(e);
+  return r ? `mb:${r}` : key;
+};
+
+// Artist and album from a Last.fm album URL (https://www.last.fm/music/<Artist>/<Album>, `+` = space), else null.
+export function parseLastfmUrl(s: string): { artist: string; album: string } | null {
+  const m = s.trim().match(/^https?:\/\/(?:www\.)?last\.fm\/(?:[a-z-]+\/)?music\/([^/?#]+)\/([^/?#]+)/i);
+  if (!m) return null;
+  const [artist, album] = [m[1], m[2]].map((p) => decodeURIComponent(p.replace(/\+/g, ' ')));
+  return { artist, album };
+}
 
 // Automatic aliases: played track whose recording id is on the tracklist -> that tracklist name.
 export function recordingAliases(entry: AlbumPlays | undefined, info: AlbumEntry | null | undefined): Aliases {
