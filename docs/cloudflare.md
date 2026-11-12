@@ -88,7 +88,7 @@ Alternative scrobble source, chosen with `?source=lb` on every `/api/grid/:user�
 - **Tracklist cache** (SharedDO `albums`): key `mb:${releaseMbid}` when the album has a release mbid, else `albumKey`. Lookup = MusicBrainz `release/{mbid}?inc=recordings` (tracks, `recordings` parallel to tracks, cover-art-archive front if flagged); 404 → fall back to Last.fm `album.getInfo`, stored under the same `mb:` key. MusicBrainz is throttled at 1100 ms (module-level, like Last.fm's), 5xx retried; every attempt counts in `fetches`.
 - **Matching**: automatic aliases from recording ids (`recordingAliases`: played track whose recording id is in the entry's `recordings` → tracklist name at that index), overridden by manual matches; name matching remains the fallback.
 - **Manual matches** are copied once (meta `matchesCopied`) from the Last.fm instance on the first `start()` (`UserDO.exportMatches()` RPC); keys are name-based so they apply directly.
-- **Ownership**: no ListenBrainz login. A ListenBrainz profile is never private; "owner" (can edit matches) = the signed-in Last.fm session name equals the ListenBrainz username (case-insensitive) — a deliberate simplification. Sign-in link / private error 17 is Last.fm only.
+- **Ownership**: no ListenBrainz login. A ListenBrainz profile is never private and anyone can edit its matches (owner's choice; token sign-in via `/1/validate-token` was the rejected alternative). Sign-in link / private error 17 is Last.fm only.
 
 ## Non-goals
 Paid plan features, Queues, KV, D1, a global rate limiter (until needed), migrating local `cache/`.

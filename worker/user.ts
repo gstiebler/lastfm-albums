@@ -63,8 +63,9 @@ export class UserDO extends DurableObject<Env> {
 
   private isLb = () => this.get<Source>('source') === 'lb';
 
-  // Deliberate simplification: ListenBrainz has no login here, so the "owner" is whoever is signed in to Last.fm under the same name.
+  // ListenBrainz has no login here: anyone may edit a ListenBrainz profile's matches (owner's choice).
   private isOwner(session: Session | null): boolean {
+    if (this.isLb()) return true;
     return !!session && session.name.toLowerCase() === this.get<string>('user')?.toLowerCase();
   }
 
