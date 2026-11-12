@@ -35,13 +35,14 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (m) {
     const user = decodeURIComponent(m[1]);
     if (!/^[\w.-]{1,64}$/.test(user)) return json({ status: 'error', message: 'Invalid username' }, 400);
-    const stub = env.USER.get(env.USER.idFromName(user.toLowerCase()));
+    const lb = searchParams.get('source') === 'lb';
+    const stub = env.USER.get(env.USER.idFromName(`${lb ? 'lb:' : ''}${user.toLowerCase()}`));
     const session = await getSessionFor();
     if (req.method === 'POST' && m[2] === '/match') {
       const { code, body } = await stub.match(session, await req.json());
       return json(body, code);
     }
-    if (req.method === 'POST') return json(await stub.start(user, session));
+    if (req.method === 'POST') return json(await stub.start(user, session, lb ? 'lb' : 'lm'));
     if (m[2] === '/debug') {
       const { code, body } = await stub.debug(session, Number(searchParams.get('n')) || 100);
       return json(body, code);

@@ -79,5 +79,16 @@ RPC methods: `getAlbums(keys)`, `putAlbums(entries)`, `getSession(sid)`, `putSes
 - Existing `rank`/`lastfm` tests keep running with `node --test`.
 - DO logic tested locally with `wrangler dev` against joanofarctan (public) end to end.
 
+## ListenBrainz source
+Alternative scrobble source, chosen with `?source=lb` on every `/api/grid/:user…` route (UI: "Source" select, kept in the URL). Last.fm stays the default and is untouched.
+- **DO naming**: `lb:${user.toLowerCase()}` → a separate UserDO with its own `pages`/`meta`/`matches`; `meta.source = 'lb'`. Last.fm instances keep their old names.
+- **Listens**: `GET api.listenbrainz.org/1/user/{u}/listens?count=1000&max_ts&min_ts` (no auth), newest first, paged backwards (next `max_ts` = oldest `listened_at`, stop on a page < 1000), so pages are sequential. `max_ts` starts at the job's `to + 1` (exclusive), `min_ts = lastUts` (exclusive; same as Last.fm's `from = lastUts + 1`). Progress shows `page n/n+1` (total unknown). Rate limit: HTTP 429 → wait `X-RateLimit-Reset-In` and retry; 5xx retried with backoff. Same 40-fetch BUDGET per alarm.
+- **Storage**: compact rows `[artist, album, track, uts, recordingMbid?, releaseMbid?]` (`mbid_mapping` is missing on ~15% of listens; unmapped listens behave like Last.fm scrobbles). `aggregate` keeps a recording mbid per played track and release mbid counts per album; the album's release is the most common one.
+- **Album key stays name-based** (`albumKey`), so grouping, sorting and manual matches are unchanged.
+- **Tracklist cache** (SharedDO `albums`): key `mb:${releaseMbid}` when the album has a release mbid, else `albumKey`. Lookup = MusicBrainz `release/{mbid}?inc=recordings` (tracks, `recordings` parallel to tracks, cover-art-archive front if flagged); 404 → fall back to Last.fm `album.getInfo`, stored under the same `mb:` key. MusicBrainz is throttled at 1100 ms (module-level, like Last.fm's), 5xx retried; every attempt counts in `fetches`.
+- **Matching**: automatic aliases from recording ids (`recordingAliases`: played track whose recording id is in the entry's `recordings` → tracklist name at that index), overridden by manual matches; name matching remains the fallback.
+- **Manual matches** are copied once (meta `matchesCopied`) from the Last.fm instance on the first `start()` (`UserDO.exportMatches()` RPC); keys are name-based so they apply directly.
+- **Ownership**: no ListenBrainz login. A ListenBrainz profile is never private; "owner" (can edit matches) = the signed-in Last.fm session name equals the ListenBrainz username (case-insensitive) — a deliberate simplification. Sign-in link / private error 17 is Last.fm only.
+
 ## Non-goals
 Paid plan features, Queues, KV, D1, a global rate limiter (until needed), migrating local `cache/`.

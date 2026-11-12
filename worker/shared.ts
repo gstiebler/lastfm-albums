@@ -1,9 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Session } from '../shared/lastfm.ts';
+import type { AlbumEntry } from '../shared/rank.ts';
 import type { Env } from './env.ts';
 
-// Album cache entry (null = Last.fm doesn't know the album).
-export type AlbumCacheEntry = { tracks: string[]; image: string; url: string } | null;
+// Album cache entry (null = unknown album). Keyed by albumKey, or `mb:${releaseMbid}` for ListenBrainz albums.
+export type AlbumCacheEntry = AlbumEntry | null;
 
 // Single instance: album.getInfo cache shared by all users, and sign-in sessions.
 export class SharedDO extends DurableObject<Env> {

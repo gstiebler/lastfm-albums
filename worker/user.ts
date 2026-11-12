@@ -1,8 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { getRecentTracksPage, getAlbumInfo } from '../shared/lastfm.ts';
 import type { Config, LastfmError, Session } from '../shared/lastfm.ts';
-import { aggregate, albumKey, scrobbleReason, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums } from '../shared/rank.ts';
-import type { AlbumResult, Aliases, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
+import { getListensPage } from '../shared/listenbrainz.ts';
+import { getRelease } from '../shared/musicbrainz.ts';
+import { aggregate, albumKey, scrobbleReason, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums, cacheKey, releaseOf, recordingAliases } from '../shared/rank.ts';
+import type { AlbumPlays, AlbumResult, Aliases, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
 import { shared } from './env.ts';
 import type { Env } from './env.ts';
 import type { AlbumCacheEntry } from './shared.ts';
@@ -14,17 +16,30 @@ type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 type Data = { state: ScrobbleState; cache: Record<string, AlbumCacheEntry> };
 type GridAlbum = AlbumResult & { key: string; image: string; url: string };
 type Reply = { code: number; body: Record<string, any> };
-type Compact = [artist: string, album: string, track: string, uts: number];
+type Source = 'lm' | 'lb'; // Last.fm | ListenBrainz
+// mbid, releaseMbid: ListenBrainz only (trailing ones omitted when absent)
+type Compact = [artist: string, album: string, track: string, uts: number, mbid?: string, releaseMbid?: string];
 
 const fail = (code: number, message: string): Reply => ({ code, body: { status: 'error', message } });
 const ok = (body: Record<string, any>): Reply => ({ code: 200, body });
 
 const compact = (tracks: Scrobble[]): Compact[] =>
-  tracks.filter((s) => !s['@attr']?.nowplaying).map((s) => [s.artist['#text'], s.album['#text'], s.name, Number(s.date!.uts)]);
+  tracks.filter((s) => !s['@attr']?.nowplaying).map((s) => {
+    const row: Compact = [s.artist['#text'], s.album['#text'], s.name, Number(s.date!.uts)];
+    if (s.releaseMbid) row.push(s.mbid ?? '', s.releaseMbid);
+    else if (s.mbid) row.push(s.mbid);
+    return row;
+  });
 const expand = (rows: Compact[]): Scrobble[] =>
-  rows.map(([artist, album, name, uts]) => ({ artist: { '#text': artist }, album: { '#text': album }, name, date: { uts: String(uts) } }));
+  rows.map(([artist, album, name, uts, mbid, releaseMbid]) => ({
+    artist: { '#text': artist }, album: { '#text': album }, name, date: { uts: String(uts) }, mbid: mbid || undefined, releaseMbid,
+  }));
 
-// One instance per Last.fm user (lowercase name). Fetches in alarm chunks; ranks in memory.
+// Tracklist entry from a Last.fm album.getInfo result.
+const lastfmEntry = (info: Awaited<ReturnType<typeof getAlbumInfo>>): AlbumCacheEntry =>
+  info && { tracks: getTracklist(info), image: info.image?.find((i) => i.size === 'extralarge')?.['#text'] || '', url: info.url };
+
+// One instance per user and source: Last.fm name lowercased, ListenBrainz `lb:` + name lowercased. Fetches in alarm chunks; ranks in memory.
 export class UserDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql;
   matches?: Record<string, Aliases>; // manual matches per albumKey, lazily loaded
@@ -46,6 +61,9 @@ export class UserDO extends DurableObject<Env> {
     for (const [k, v] of Object.entries(values)) this.sql.exec('INSERT OR REPLACE INTO meta VALUES (?, ?)', k, JSON.stringify(v ?? null));
   }
 
+  private isLb = () => this.get<Source>('source') === 'lb';
+
+  // Deliberate simplification: ListenBrainz has no login here, so the "owner" is whoever is signed in to Last.fm under the same name.
   private isOwner(session: Session | null): boolean {
     return !!session && session.name.toLowerCase() === this.get<string>('user')?.toLowerCase();
   }
@@ -67,16 +85,29 @@ export class UserDO extends DurableObject<Env> {
     return this.matches[key] ?? {};
   }
 
-  async start(user: string, session: Session | null): Promise<{ status: Status | undefined }> {
+  // Manual matches of this (Last.fm) instance, to seed a ListenBrainz instance.
+  exportMatches(): { album: string; played: string; track: string }[] {
+    return this.sql.exec('SELECT album, played, track FROM matches').toArray() as any;
+  }
+
+  async start(user: string, session: Session | null, source: Source = 'lm'): Promise<{ status: Status | undefined }> {
     const status = this.get<Status>('status');
-    const isOwner = session?.name.toLowerCase() === user.toLowerCase();
+    const lb = source === 'lb';
+    const isOwner = !lb && session?.name.toLowerCase() === user.toLowerCase(); // a ListenBrainz profile is never private
     if (status === 'running' || (this.get('private') && !isOwner)) return { status };
+    if (lb && !this.get('matchesCopied')) {
+      for (const m of await this.env.USER.get(this.env.USER.idFromName(user.toLowerCase())).exportMatches()) {
+        this.sql.exec('INSERT OR IGNORE INTO matches VALUES (?, ?, ?)', m.album, m.played, m.track);
+      }
+      this.matches = undefined;
+      this.set({ matchesCopied: true });
+    }
     const lastUts = this.get<number>('lastUts');
     const resume = status === 'error' && this.get<Progress>('progress')?.phase === 'albums'; // scrobbles already stored
     this.set({
-      status: 'running', message: null, code: null, user, private: isOwner, sk: isOwner ? session!.key : null,
+      status: 'running', message: null, code: null, user, source, private: isOwner, sk: isOwner ? session!.key : null,
       ...(!resume && {
-        page: 1, pages: 1, to: Math.floor(Date.now() / 1000), from: lastUts ? lastUts + 1 : null,
+        page: 1, pages: 1, maxTs: null, to: Math.floor(Date.now() / 1000), from: lastUts ? lastUts + 1 : null,
         progress: { phase: 'scrobbles', done: 0, total: 1 },
       }),
     });
@@ -88,7 +119,7 @@ export class UserDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const cfg: Config = { apiKey: this.env.LASTFM_API_KEY, secret: this.env.LASTFM_SHARED_SECRET, fetches: 0 };
     try {
-      if (this.get<Progress>('progress')!.phase === 'scrobbles') await this.fetchScrobbles(cfg);
+      if (this.get<Progress>('progress')!.phase === 'scrobbles') await (this.isLb() ? this.fetchListens(cfg) : this.fetchScrobbles(cfg));
       if (this.get<Progress>('progress')!.phase === 'albums') await this.fetchAlbums(cfg);
     } catch (err) {
       this.set({ status: 'error', message: (err as Error).message, code: (err as LastfmError).code });
@@ -111,7 +142,27 @@ export class UserDO extends DurableObject<Env> {
       this.set({ page, pages, progress: { phase: 'scrobbles', done: page - 1, total: pages } });
     }
     if (page <= pages) return;
-    this.set({ end: end + page - 1 });
+    await this.scrobblesDone(end + page - 1);
+  }
+
+  // ListenBrainz: pages go backwards from `to` via max_ts, so they are sequential; the total is unknown (shown as done + 1).
+  private async fetchListens(cfg: Config): Promise<void> {
+    const end = this.get<number>('end') ?? 0;
+    const [user, from, to] = (['user', 'from', 'to'] as const).map((k) => this.get<any>(k));
+    let page = this.get<number>('page')!;
+    let maxTs = this.get<number>('maxTs') ?? to + 1; // max_ts is exclusive
+    while (cfg.fetches! < BUDGET) {
+      const r = await getListensPage(cfg, user, { from, maxTs });
+      this.sql.exec('INSERT OR REPLACE INTO pages VALUES (?, ?)', end + page, JSON.stringify(compact(r.tracks)));
+      page++;
+      if (r.last) return this.scrobblesDone(end + page - 1);
+      maxTs = r.oldest;
+      this.set({ page, maxTs, progress: { phase: 'scrobbles', done: page - 1, total: page } });
+    }
+  }
+
+  private async scrobblesDone(end: number): Promise<void> {
+    this.set({ end });
     this.data = undefined;
     this.set({ progress: { phase: 'albums', done: 0, total: (await this.todo()).length } });
   }
@@ -120,33 +171,38 @@ export class UserDO extends DurableObject<Env> {
     const { state, cache } = await this.load();
     const todo = await this.todo();
     const { total } = this.get<Progress>('progress')!;
-    const fetched: Record<string, AlbumCacheEntry> = {};
+    const fetched: Record<string, AlbumCacheEntry> = {}; // by albumKey
     try {
       for (let i = 0; i < todo.length && cfg.fetches! + CONCURRENCY <= BUDGET; i += CONCURRENCY) {
         const group = todo.slice(i, i + CONCURRENCY);
-        const rs = await Promise.allSettled(group.map(([, e]) => getAlbumInfo(cfg, e.artist, e.album)));
+        const rs = await Promise.allSettled(group.map(([, e]) => this.lookup(cfg, e)));
         rs.forEach((r, j) => {
-          if (r.status !== 'fulfilled') return;
-          const info = r.value;
-          fetched[group[j][0]] = info && {
-            tracks: getTracklist(info),
-            image: info.image?.find((i) => i.size === 'extralarge')?.['#text'] || '',
-            url: info.url,
-          };
+          if (r.status === 'fulfilled') fetched[group[j][0]] = r.value;
         });
         const bad = rs.find((r) => r.status === 'rejected');
         if (bad) throw bad.reason; // successes are still saved in finally
       }
     } finally {
       Object.assign(cache, fetched);
-      await shared(this.env).putAlbums(fetched);
+      await shared(this.env).putAlbums(Object.fromEntries(Object.entries(fetched).map(([k, v]) => [cacheKey(k, state.plays[k]), v])));
     }
     const left = todo.length - Object.keys(fetched).length;
     this.set({ progress: { phase: 'albums', done: total - left, total } });
     if (!left) this.set({ status: 'done', lastUts: state.lastUts });
   }
 
-  // Albums that need an album.getInfo lookup and aren't cached yet.
+  // MusicBrainz release when the listens carry one (falling back to Last.fm if it's unknown there), else Last.fm.
+  private async lookup(cfg: Config, e: AlbumPlays): Promise<AlbumCacheEntry> {
+    const mbid = releaseOf(e);
+    return (mbid && (await getRelease(cfg, mbid))) || lastfmEntry(await getAlbumInfo(cfg, e.artist, e.album));
+  }
+
+  // Manual matches over automatic recording-id aliases.
+  private effective(key: string, entry: AlbumPlays | undefined, info: AlbumCacheEntry | undefined): Aliases {
+    return { ...recordingAliases(entry, info), ...this.aliases(key) };
+  }
+
+  // Albums that need a tracklist lookup and aren't cached yet.
   private async todo() {
     const { state, cache } = await this.load();
     const distinct = (e: { tracks: object }) => Object.keys(e.tracks).length;
@@ -160,7 +216,10 @@ export class UserDO extends DurableObject<Env> {
       aggregate(state, expand(JSON.parse(row.data as string)));
     }
     const keys = Object.entries(state.plays).filter(([, e]) => needsLookup(e)).map(([k]) => k);
-    return (this.data = { state, cache: await shared(this.env).getAlbums(keys) });
+    const found = await shared(this.env).getAlbums(keys.map((k) => cacheKey(k, state.plays[k])));
+    const cache: Record<string, AlbumCacheEntry> = {}; // by albumKey
+    for (const k of keys) if (cacheKey(k, state.plays[k]) in found) cache[k] = found[cacheKey(k, state.plays[k])];
+    return (this.data = { state, cache });
   }
 
   // GET /api/grid/:user (album=false) or /api/grid/:user/album (album=true).
@@ -184,7 +243,7 @@ export class UserDO extends DurableObject<Env> {
       const entry = state.plays[key];
       const info = cache[key];
       if (!entry || !info) return fail(404, 'Unknown album');
-      const aliases = this.aliases(key);
+      const aliases = this.effective(key, entry, info);
       return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range, aliases),
         extra: extraTracks(entry, info.tracks, range, aliases), editable: this.isOwner(session) } });
     }
@@ -193,7 +252,7 @@ export class UserDO extends DurableObject<Env> {
     const albums: GridAlbum[] = [];
     for (const [key, e] of Object.entries(state.plays)) {
       const info = cache[key];
-      const r = info && computeAlbum(e, info.tracks, range, this.aliases(key));
+      const r = info && computeAlbum(e, info.tracks, range, this.effective(key, e, info));
       if (r) albums.push({ ...r, key, image: info.image, url: info.url });
     }
     return ok({ status, ...(partial && { progress }), albums: sortAlbums(albums, sort) });
@@ -212,10 +271,10 @@ export class UserDO extends DurableObject<Env> {
     const scrobbles = rows.slice(0, Math.min(Math.max(n, 1), 1000)).map(({ s, pending }) => {
       const [artist, album, track] = [s.artist['#text'], s.album['#text'], s.name];
       const key = albumKey(artist, album);
-      const reason = pending ? 'fetch not finished' : scrobbleReason(album, state.plays[key], cache[key], key in cache, track, this.aliases(key));
+      const reason = pending ? 'fetch not finished' : scrobbleReason(album, state.plays[key], cache[key], key in cache, track, this.effective(key, state.plays[key], cache[key]));
       return { uts: Number(s.date!.uts), artist, album, track, pending, reason };
     });
-    const meta = Object.fromEntries((['status', 'progress', 'message', 'code', 'user', 'lastUts', 'from', 'to', 'end', 'page', 'pages'] as const).map((k) => [k, this.get(k) ?? null]));
+    const meta = Object.fromEntries((['status', 'progress', 'message', 'code', 'user', 'source', 'lastUts', 'from', 'to', 'end', 'page', 'pages'] as const).map((k) => [k, this.get(k) ?? null]));
     return ok({ status: 'ok', meta, scrobbles });
   }
 

@@ -3,7 +3,7 @@ import AlbumPanel from './components/AlbumPanel.tsx';
 import AlbumTile from './components/AlbumTile.tsx';
 import DebugPanel from './components/DebugPanel.tsx';
 import AuthStatus, { SignInLink } from './components/AuthStatus.tsx';
-import type { Album, GridResponse, Progress, Sort } from './types.ts';
+import type { Album, GridResponse, Progress, Sort, Source } from './types.ts';
 
 function progressText({ phase, done, total }: Progress) {
   return phase === 'scrobbles'
@@ -19,8 +19,9 @@ function toUts(date: string, endOfDay = false): number | undefined {
   return d.getTime() / 1000 - (endOfDay ? 1 : 0);
 }
 
-async function api(user: string, method: 'GET' | 'POST', from = '', to = '', sort: Sort = 'plays'): Promise<GridResponse> {
+async function api(user: string, source: Source, method: 'GET' | 'POST', from = '', to = '', sort: Sort = 'plays'): Promise<GridResponse> {
   const q = new URLSearchParams();
+  if (source === 'lb') q.set('source', 'lb');
   const f = toUts(from);
   const t = toUts(to, true);
   if (f !== undefined) q.set('from', String(f));
@@ -47,11 +48,12 @@ export default function App() {
   const params = new URLSearchParams(location.search);
   const initial = params.get('user') ?? '';
   const [input, setInput] = useState(initial);
-  const [run, setRun] = useState({ user: initial, n: 0 }); // submitted username
+  const [src, setSrc] = useState<Source>(params.get('source') === 'lb' ? 'lb' : 'lm');
+  const [run, setRun] = useState({ user: initial, source: src, n: 0 }); // submitted username + source
   const [from, setFrom] = useState(params.get('from') ?? '');
   const [to, setTo] = useState(params.get('to') ?? '');
   const [sort, setSort] = useState<Sort>(params.get('sort') === 'recent' || params.get('sort') === 'artist' ? (params.get('sort') as Sort) : 'plays');
-  const [ready, setReady] = useState(''); // user whose job is done
+  const [ready, setReady] = useState<{ user: string; source: Source } | null>(null); // run whose job is done
   const [status, setStatus] = useState('');
   const [error, setError] = useState<{ message: string; code?: number } | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -65,26 +67,26 @@ export default function App() {
 
   // Poll the job for `user`; a change of `user` cancels the previous run.
   useEffect(() => {
-    const { user } = run;
+    const { user, source } = run;
     if (!user) return;
     const id = ++runId.current;
     if (user !== shown.current) setAlbums([]); // re-running the same user keeps the grid until fresh data arrives
     shown.current = user;
     setError(null);
-    setReady('');
+    setReady(null);
     setStatus('Starting…');
 
     async function load() {
-      await api(user, 'POST');
+      await api(user, source, 'POST');
       while (id === runId.current) {
         const q = query.current;
-        const data = await api(user, 'GET', q.from, q.to, q.sort);
+        const data = await api(user, source, 'GET', q.from, q.to, q.sort);
         if (id !== runId.current) return;
         if (data.status === 'running') {
           setStatus(progressText(data.progress));
           if (data.albums) setAlbums(data.albums); // partial grid; keep the previous one until this arrives
         } else if (data.status === 'done') {
-          setReady(user);
+          setReady({ user, source });
           return;
         } else {
           setStatus('');
@@ -108,15 +110,16 @@ export default function App() {
     const q = new URLSearchParams({ user: run.user });
     if (from) q.set('from', from);
     if (to) q.set('to', to);
+    if (run.source === 'lb') q.set('source', 'lb');
     if (sort !== 'plays') q.set('sort', sort);
     history.replaceState(null, '', `?${q}`);
-  }, [run.user, from, to, sort]);
+  }, [run.user, run.source, from, to, sort]);
 
   // Once the job is done, (re-)rank on the server whenever the range changes.
   useEffect(() => {
     if (!ready) return;
     let stale = false;
-    api(ready, 'GET', from, to, sort).then((data) => {
+    api(ready.user, ready.source, 'GET', from, to, sort).then((data) => {
       if (stale) return;
       if (data.status === 'done') {
         setStatus(`${data.albums.length} albums`);
@@ -134,7 +137,7 @@ export default function App() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    setRun((r) => ({ user: input.trim(), n: r.n + 1 })); // n: resubmitting the same user re-runs
+    setRun((r) => ({ user: input.trim(), source: src, n: r.n + 1 })); // n: resubmitting the same user re-runs
   }
 
   const tile = (a: Album) => <AlbumTile key={a.key} a={a} sort={sort} onOpen={() => setOpen(a)} />;
@@ -145,8 +148,14 @@ export default function App() {
         <h1>Album Grid</h1>
         <AuthStatus />
         <form id="form" onSubmit={submit}>
+          <label>Source
+            <select name="source" value={src} onChange={(e) => setSrc(e.target.value as Source)}>
+              <option value="lm">Last.fm</option>
+              <option value="lb">ListenBrainz</option>
+            </select>
+          </label>
           <input
-            id="user" name="user" placeholder="Last.fm username" autoComplete="off" required
+            id="user" name="user" placeholder={`${src === 'lb' ? 'ListenBrainz' : 'Last.fm'} username`} autoComplete="off" required
             value={input} onChange={(e) => setInput(e.target.value)}
           />
           <label>From <input type="date" name="from" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></label>
@@ -176,8 +185,8 @@ export default function App() {
             </section>
           ))}</main>
         : <main id="grid" className="grid">{albums.map(tile)}</main>}
-      {debug && <DebugPanel user={run.user} onClose={() => setDebug(false)} />}
-      {open && <AlbumPanel user={run.user} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} onChange={() => setVersion((v) => v + 1)} />}
+      {debug && <DebugPanel user={run.user} source={run.source} onClose={() => setDebug(false)} />}
+      {open && <AlbumPanel user={run.user} source={run.source} a={open} sort={sort} from={toUts(from)} to={toUts(to, true)} onClose={() => setOpen(null)} onChange={() => setVersion((v) => v + 1)} />}
     </>
   );
 }

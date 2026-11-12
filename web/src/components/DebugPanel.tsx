@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DebugResponse } from '../types.ts';
+import type { DebugResponse, Source } from '../types.ts';
 
 const when = (uts: number | null) => (uts ? new Date(uts * 1000).toLocaleString() : '—');
 
-export default function DebugPanel({ user, onClose }: { user: string; onClose: () => void }) {
+export default function DebugPanel({ user, source, onClose }: { user: string; source: Source; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [data, setData] = useState<DebugResponse | null>(null);
   const [error, setError] = useState('');
@@ -12,7 +12,7 @@ export default function DebugPanel({ user, onClose }: { user: string; onClose: (
 
   useEffect(() => {
     let stale = false;
-    fetch(`/api/grid/${encodeURIComponent(user)}/debug?n=200`)
+    fetch(`/api/grid/${encodeURIComponent(user)}/debug?n=200${source === 'lb' ? '&source=lb' : ''}`)
       .then((r) => r.json())
       .then((d: DebugResponse & { message?: string }) => {
         if (stale) return;
@@ -21,7 +21,7 @@ export default function DebugPanel({ user, onClose }: { user: string; onClose: (
       })
       .catch((err: Error) => { if (!stale) setError(err.message); });
     return () => { stale = true; };
-  }, [user]);
+  }, [user, source]);
 
   const m = data?.meta;
   return (
@@ -39,6 +39,7 @@ export default function DebugPanel({ user, onClose }: { user: string; onClose: (
         {data && m && <>
           <dl className="debug-meta">
             <dt>status</dt><dd>{m.status}</dd>
+            <dt>source</dt><dd>{m.source ?? 'lm'}</dd>
             {m.progress && <><dt>progress</dt><dd>{m.progress.phase} {m.progress.done}/{m.progress.total}</dd></>}
             {m.message && <><dt>message</dt><dd>{m.message}</dd></>}
             {m.code && <><dt>code</dt><dd>{m.code}</dd></>}

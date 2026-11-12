@@ -17,6 +17,8 @@ export type Album = {
 
 export type Sort = 'plays' | 'recent' | 'artist';
 
+export type Source = 'lm' | 'lb'; // Last.fm | ListenBrainz
+
 export type Progress = { phase: 'scrobbles' | 'albums'; done: number; total: number };
 
 export type GridResponse =
@@ -26,7 +28,7 @@ export type GridResponse =
 
 export type DebugScrobble = { uts: number; artist: string; album: string; track: string; pending: boolean; reason: string };
 export type DebugMeta = {
-  status: string | null; progress: Progress | null; message: string | null; code: number | null; user: string | null;
+  status: string | null; source: Source | null; progress: Progress | null; message: string | null; code: number | null; user: string | null;
   lastUts: number | null; from: number | null; to: number | null; end: number | null; page: number | null; pages: number | null;
 };
 export type DebugResponse = { meta: DebugMeta; scrobbles: DebugScrobble[] };

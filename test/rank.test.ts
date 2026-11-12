@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeArtist, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, releaseOf, cacheKey, recordingAliases, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -287,7 +287,7 @@ test('scrobbleReason covers each branch', () => {
   assert.equal(scrobbleReason('', undefined, undefined, false, 'a', {}), 'no album tag');
   assert.equal(scrobbleReason('x', few, undefined, false, 'a', {}), 'fewer than 3 distinct tracks (2)');
   assert.equal(scrobbleReason('x', many, undefined, false, 'a', {}), 'album lookup pending');
-  assert.equal(scrobbleReason('x', many, null, true, 'a', {}), 'album not found on Last.fm');
+  assert.equal(scrobbleReason('x', many, null, true, 'a', {}), 'album not found');
   assert.equal(scrobbleReason('x', many, { tracks: ['A'] }, true, 'a', {}), 'empty tracklist');
   assert.equal(scrobbleReason('x', many, info, true, 'z', {}), 'track not on tracklist');
   assert.equal(scrobbleReason('x', many, info, true, 'z', { z: 'a' }), 'in grid');
@@ -324,4 +324,35 @@ test('computeAlbum: 3+ played but none on tracklist still shown with heard 0', (
   assert.equal(r.pct, 0);
   assert.equal(r.full, 0);
   assert.equal(r.completedAt, 0);
+});
+
+test('aggregate stores recording mbids per track and release counts per album', () => {
+  const state = aggregate({ version: 2, lastUts: 0, plays: {} }, [
+    scrobble('A', 'X', 'one', 1, { mbid: 'rec1', releaseMbid: 'relA' }),
+    scrobble('A', 'X', 'one', 2, { mbid: 'rec1', releaseMbid: 'relA' }),
+    scrobble('A', 'X', 'two', 3, { mbid: 'rec2', releaseMbid: 'relB' }),
+    scrobble('A', 'X', 'three', 4),
+  ]);
+  const e = state.plays[albumKey('A', 'X')];
+  assert.deepEqual(e.releases, { relA: 2, relB: 1 });
+  assert.equal(e.tracks.one.mbid, 'rec1');
+  assert.equal(e.tracks.three.mbid, undefined);
+  assert.equal(releaseOf(e), 'relA');
+  assert.equal(cacheKey(albumKey('A', 'X'), e), 'mb:relA');
+  assert.equal(cacheKey('k', { artist: 'A', album: 'X', tracks: {} }), 'k');
+});
+
+test('recordingAliases: played track whose recording is on the tracklist maps to its name', () => {
+  const state = aggregate({ version: 2, lastUts: 0, plays: {} }, [
+    scrobble('A', 'X', 'Pt. 1', 1, { mbid: 'r1' }),
+    scrobble('A', 'X', 'two', 2, { mbid: 'r2' }),
+    scrobble('A', 'X', 'other', 3, { mbid: 'r9' }),
+    scrobble('A', 'X', 'nomb', 4),
+  ]);
+  const e = state.plays[albumKey('A', 'X')];
+  const info = { tracks: ['Part I', 'Two', 'Three'], recordings: ['r1', 'r2', 'r3'], image: '', url: '' };
+  assert.deepEqual(recordingAliases(e, info), { 'pt 1': 'part i', two: 'two' });
+  assert.deepEqual(recordingAliases(e, { ...info, recordings: undefined }), {});
+  assert.deepEqual(recordingAliases(e, null), {});
+  assert.equal(computeAlbum(e, info.tracks, {}, recordingAliases(e, info))!.heard, 2);
 });

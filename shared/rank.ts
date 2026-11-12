@@ -7,9 +7,15 @@ export type Scrobble = {
   name: string;
   date?: { uts: string };
   '@attr'?: { nowplaying?: string };
+  mbid?: string; // ListenBrainz: MusicBrainz recording id
+  releaseMbid?: string; // ListenBrainz: MusicBrainz release id
 };
 
-export type AlbumPlays = { artist: string; album: string; tracks: Record<string, { name: string; times: number[] }> };
+// releases: release mbid -> listen count (ListenBrainz only); tracks[].mbid: recording mbid
+export type AlbumPlays = { artist: string; album: string; releases?: Record<string, number>; tracks: Record<string, { name: string; times: number[]; mbid?: string }> };
+
+// Tracklist lookup result; recordings (MusicBrainz) is parallel to tracks.
+export type AlbumEntry = { tracks: string[]; image: string; url: string; recordings?: string[] };
 export type ScrobbleState = { version: 2; lastUts: number; plays: Record<string, AlbumPlays> };
 
 // album.getInfo `album` object (only the fields we use).
@@ -83,11 +89,30 @@ export function aggregate(state: ScrobbleState, scrobbles: Scrobble[]): Scrobble
     if (!album) continue;
     const key = albumKey(artist, album);
     const entry = (state.plays[key] ??= { artist, album, tracks: {} });
+    if (s.releaseMbid) (entry.releases ??= {})[s.releaseMbid] = (entry.releases[s.releaseMbid] ?? 0) + 1;
     const track = (entry.tracks[normalizeTrack(s.name)] ??= { name: s.name, times: [] });
+    if (s.mbid) track.mbid ??= s.mbid;
     const uts = Number(s.date!.uts);
     track.times.push(uts);
   }
   return state;
+}
+
+// The album's most listened release mbid, if any.
+export const releaseOf = (e: AlbumPlays): string | undefined => Object.entries(e.releases ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+// Album cache key: the MusicBrainz release when known, else the name-based albumKey.
+export const cacheKey = (key: string, e: AlbumPlays): string => { const r = releaseOf(e); return r ? `mb:${r}` : key; };
+
+// Automatic aliases: played track whose recording id is on the tracklist -> that tracklist name.
+export function recordingAliases(entry: AlbumPlays | undefined, info: AlbumEntry | null | undefined): Aliases {
+  const out: Aliases = {};
+  if (!entry || !info?.recordings) return out;
+  for (const [played, t] of Object.entries(entry.tracks)) {
+    const i = t.mbid ? info.recordings.indexOf(t.mbid) : -1;
+    if (i >= 0) out[played] = normalizeTrack(info.tracks[i]);
+  }
+  return out;
 }
 
 // album.getInfo -> array of track names ([] when missing)
@@ -106,7 +131,7 @@ export function scrobbleReason(album: string, entry: AlbumPlays | undefined, inf
   if (!album) return 'no album tag';
   if (!entry || !needsLookup(entry)) return `fewer than ${MIN_DISTINCT_TRACKS} distinct tracks (${entry ? Object.keys(entry.tracks).length : 0})`;
   if (!cached) return 'album lookup pending';
-  if (!info) return 'album not found on Last.fm';
+  if (!info) return 'album not found';
   const keys = new Set(info.tracks.map(normalizeTrack));
   if (keys.size <= 1) return 'empty tracklist';
   if (!keys.has(keyOf(track, aliases))) return 'track not on tracklist';
