@@ -53,6 +53,11 @@ a { color: var(--accent); }
 .tracks .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tracks .num, .tracks .last { color: var(--muted); font-size: 0.85rem; }
 .tracks .unplayed { opacity: 0.45; }
+.tracks .ignored { opacity: 0.45; }
+.tracks .ignored .name { text-decoration: line-through; }
+.tracks .ignore { display: inline-block; margin-left: 8px; font-size: 0.8rem; color: var(--muted); }
+.tracks li:not(.ignored) button.ignore { visibility: hidden; }
+.tracks li:hover button.ignore, .tracks button.ignore:focus-visible { visibility: visible; }
 .panel-foot { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
 .override-form { display: flex; flex-direction: column; gap: 6px; }
 .override-form input { padding: 6px; }

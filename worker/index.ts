@@ -31,7 +31,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (sid) await shared(env).deleteSession(sid);
     return new Response(null, { status: 204, headers: { 'Set-Cookie': cookie('', 0) } });
   }
-  const m = pathname.match(/^\/api\/grid\/([^/]+)(\/album|\/match|\/override|\/debug)?$/);
+  const m = pathname.match(/^\/api\/grid\/([^/]+)(\/album|\/match|\/override|\/ignore|\/debug)?$/);
   if (m) {
     const user = decodeURIComponent(m[1]);
     if (!/^[\w.-]{1,64}$/.test(user)) return json({ status: 'error', message: 'Invalid username' }, 400);
@@ -40,6 +40,10 @@ async function route(req: Request, env: Env): Promise<Response> {
     const session = await getSessionFor();
     if (req.method === 'POST' && m[2] === '/match') {
       const { code, body } = await stub.match(session, await req.json());
+      return json(body, code);
+    }
+    if (req.method === 'POST' && m[2] === '/ignore') {
+      const { code, body } = await stub.ignore(session, await req.json());
       return json(body, code);
     }
     if (req.method === 'POST' && m[2] === '/override') {

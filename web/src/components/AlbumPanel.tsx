@@ -44,6 +44,16 @@ export default function AlbumPanel({ user, source, a, sort, from, to, onClose, o
     onChange();
   }
 
+  async function ignore(track: string, ignored: boolean) {
+    const res = await fetch(`/api/grid/${encodeURIComponent(user)}/ignore${source === 'lb' ? '?source=lb' : ''}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: a.key, track, ignored }),
+    });
+    if (!res.ok) { setError((await res.json()).message); return; }
+    setVersion((v) => v + 1);
+    onChange();
+  }
+
   async function setOverride(artist: string | null, album: string | null) {
     const res = await fetch(`/api/grid/${encodeURIComponent(user)}/override${source === 'lb' ? '?source=lb' : ''}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -85,9 +95,16 @@ export default function AlbumPanel({ user, source, a, sort, from, to, onClose, o
         {detail && <>
           <ol className="tracks">
             {detail.tracks.map((t, i) => (
-              <li key={i} className={t.plays ? '' : 'unplayed'}>
+              <li key={i} className={t.ignored ? 'ignored' : t.plays ? '' : 'unplayed'}>
                 <span className="num">{i + 1}</span>
-                <span className="name">{t.name}</span>
+                <span className="name">
+                  {t.name}
+                  {detail.editable ? (
+                    <button type="button" className="link ignore" title={t.ignored ? 'Count this track again' : "Don't count this track (e.g. continuous mix, remix)"} onClick={() => ignore(t.name, !t.ignored)}>
+                      {t.ignored ? 'ignored' : 'ignore'}
+                    </button>
+                  ) : t.ignored && <span className="ignore">ignored</span>}
+                </span>
                 <span className="plays">{t.plays ? `×${t.plays}` : '—'}</span>
                 <span className="last">{t.lastPlayed ? new Date(t.lastPlayed * 1000).toLocaleDateString() : '—'}</span>
               </li>

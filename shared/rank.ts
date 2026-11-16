@@ -129,6 +129,9 @@ export function recordingAliases(entry: AlbumPlays | undefined, info: AlbumEntry
   return out;
 }
 
+// Tracklist minus the tracks the owner marked as not counting (normalized names), e.g. a continuous mix or bonus remixes.
+export const countedTracks = (tracklist: string[], ignored: Set<string>): string[] => tracklist.filter((t) => !ignored.has(normalizeTrack(t)));
+
 // album.getInfo -> array of track names ([] when missing)
 export function getTracklist(info?: Pick<AlbumInfo, 'tracks'> | null): string[] {
   const t = info?.tracks?.track;

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeName, normalizeArtist, normalizeTrack, albumKey, aggregate, getTracklist,
-  needsLookup, computeAlbum, releaseOf, cacheKey, parseLastfmUrl, recordingAliases, scrobbleReason, albumTracks, extraTracks, sortAlbums, MIN_DISTINCT_TRACKS,
+  needsLookup, computeAlbum, releaseOf, cacheKey, parseLastfmUrl, recordingAliases, scrobbleReason, albumTracks, extraTracks, sortAlbums, countedTracks, MIN_DISTINCT_TRACKS,
 } from '../shared/rank.ts';
 
 const scrobble = (artist: string, album: string, name: string, uts: number, extra = {}) => ({
@@ -362,4 +362,14 @@ test('recordingAliases: played track whose recording is on the tracklist maps to
   assert.deepEqual(recordingAliases(e, { ...info, recordings: undefined }), {});
   assert.deepEqual(recordingAliases(e, null), {});
   assert.equal(computeAlbum(e, info.tracks, {}, recordingAliases(e, info))!.heard, 2);
+});
+
+test('countedTracks: ignored tracks drop out of pct/length', () => {
+  const e = entry({ a: [10], b: [20], c: [30] });
+  const tl = ['A', 'B', 'C', 'Continuous Mix', 'B (Remix)'];
+  const tracks = countedTracks(tl, new Set(['continuous mix', 'b remix']));
+  assert.deepEqual(tracks, ['A', 'B', 'C']);
+  const r = computeAlbum(e, tracks)!;
+  assert.equal(r.pct, 1);
+  assert.equal(r.length, 3);
 });

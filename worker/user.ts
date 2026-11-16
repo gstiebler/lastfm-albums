@@ -3,7 +3,7 @@ import { getRecentTracksPage, getAlbumInfo } from '../shared/lastfm.ts';
 import type { Config, LastfmError, Session } from '../shared/lastfm.ts';
 import { getListensPage } from '../shared/listenbrainz.ts';
 import { getRelease } from '../shared/musicbrainz.ts';
-import { aggregate, albumKey, scrobbleReason, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums, cacheKey, releaseOf, recordingAliases } from '../shared/rank.ts';
+import { aggregate, albumKey, scrobbleReason, getTracklist, needsLookup, computeAlbum, albumTracks, extraTracks, normalizeTrack, sortAlbums, cacheKey, releaseOf, recordingAliases, countedTracks } from '../shared/rank.ts';
 import type { AlbumPlays, AlbumResult, Aliases, Range, Scrobble, ScrobbleState } from '../shared/rank.ts';
 import { shared } from './env.ts';
 import type { Env } from './env.ts';
@@ -44,6 +44,7 @@ export class UserDO extends DurableObject<Env> {
   sql = this.ctx.storage.sql;
   matches?: Record<string, Aliases>; // manual matches per albumKey, lazily loaded
   overrides?: Record<string, { artist: string; name: string }>; // owner-chosen Last.fm album per albumKey, lazily loaded
+  ignoredTracks?: Record<string, Set<string>>; // normalized tracklist tracks that don't count, per albumKey, lazily loaded
   data?: Data; // aggregated scrobbles + album cache; rebuilt from storage after eviction
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -52,6 +53,7 @@ export class UserDO extends DurableObject<Env> {
     this.sql.exec('CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, data TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS matches (album TEXT, played TEXT, track TEXT, PRIMARY KEY (album, played))');
     this.sql.exec('CREATE TABLE IF NOT EXISTS overrides (album TEXT PRIMARY KEY, artist TEXT, name TEXT)');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS ignored (album TEXT, track TEXT, PRIMARY KEY (album, track))');
   }
 
   private get<T>(k: string): T | undefined {
@@ -94,6 +96,14 @@ export class UserDO extends DurableObject<Env> {
       for (const r of this.sql.exec('SELECT album, artist, name FROM overrides').toArray()) this.overrides[r.album as string] = { artist: r.artist as string, name: r.name as string };
     }
     return this.overrides[key];
+  }
+
+  private ignored(key: string): Set<string> {
+    if (!this.ignoredTracks) {
+      this.ignoredTracks = {};
+      for (const r of this.sql.exec('SELECT album, track FROM ignored').toArray()) (this.ignoredTracks[r.album as string] ??= new Set()).add(r.track as string);
+    }
+    return (this.ignoredTracks[key] ??= new Set());
   }
 
   private cacheKeyOf = (key: string, e: AlbumPlays) => cacheKey(key, e, this.override(key));
@@ -259,7 +269,9 @@ export class UserDO extends DurableObject<Env> {
       const info = cache[key];
       if (!entry || !info) return fail(404, 'Unknown album');
       const aliases = this.effective(key, entry, info);
-      return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks: albumTracks(entry, info.tracks, range, aliases),
+      const ignored = this.ignored(key);
+      const tracks = albumTracks(entry, info.tracks, range, aliases).map((t) => ({ ...t, ignored: ignored.has(normalizeTrack(t.name)) }));
+      return ok({ status, album: { artist: entry.artist, album: entry.album, image: info.image, url: info.url, tracks,
         extra: extraTracks(entry, info.tracks, range, aliases), editable: this.isOwner(session),
         override: this.override(key) ? { artist: this.override(key).artist, album: this.override(key).name } : null } });
     }
@@ -268,7 +280,7 @@ export class UserDO extends DurableObject<Env> {
     const albums: GridAlbum[] = [];
     for (const [key, e] of Object.entries(state.plays)) {
       const info = cache[key];
-      const r = info && computeAlbum(e, info.tracks, range, this.effective(key, e, info));
+      const r = info && computeAlbum(e, countedTracks(info.tracks, this.ignored(key)), range, this.effective(key, e, info));
       if (r) albums.push({ ...r, key, image: info.image, url: info.url });
     }
     return ok({ status, ...(partial && { progress }), albums: sortAlbums(albums, sort) });
@@ -287,7 +299,7 @@ export class UserDO extends DurableObject<Env> {
     const scrobbles = rows.slice(0, Math.min(Math.max(n, 1), 1000)).map(({ s, pending }) => {
       const [artist, album, track] = [s.artist['#text'], s.album['#text'], s.name];
       const key = albumKey(artist, album);
-      const reason = pending ? 'fetch not finished' : scrobbleReason(album, state.plays[key], cache[key], key in cache, track, this.effective(key, state.plays[key], cache[key]));
+      const reason = pending ? 'fetch not finished' : scrobbleReason(album, state.plays[key], cache[key] && { tracks: countedTracks(cache[key].tracks, this.ignored(key)) }, key in cache, track, this.effective(key, state.plays[key], cache[key]));
       return { uts: Number(s.date!.uts), artist, album, track, pending, reason };
     });
     const meta = Object.fromEntries((['status', 'progress', 'message', 'code', 'user', 'source', 'lastUts', 'from', 'to', 'end', 'page', 'pages'] as const).map((k) => [k, this.get(k) ?? null]));
@@ -311,6 +323,24 @@ export class UserDO extends DurableObject<Env> {
     } else {
       this.sql.exec('INSERT OR REPLACE INTO matches VALUES (?, ?, ?)', b.key, b.played, b.track);
       (this.matches![b.key] ??= {})[played] = normalizeTrack(b.track);
+    }
+    return ok({ status: 'ok' });
+  }
+
+  // POST /api/grid/:user/ignore: mark a tracklist track as not counting toward the album's completion (ignored false undoes). Owner only.
+  async ignore(session: Session | null, b: { key: string; track: string; ignored: boolean }): Promise<Reply> {
+    if (!this.isOwner(session)) return fail(403, 'Only the profile owner can edit matches');
+    const { cache } = await this.load();
+    const info = cache[b.key];
+    if (!info) return fail(404, 'Unknown album');
+    if (!info.tracks.includes(b.track)) return fail(400, 'Unknown tracklist track');
+    const track = normalizeTrack(b.track);
+    if (b.ignored) {
+      this.sql.exec('INSERT OR IGNORE INTO ignored VALUES (?, ?)', b.key, track);
+      this.ignored(b.key).add(track);
+    } else {
+      this.sql.exec('DELETE FROM ignored WHERE album = ? AND track = ?', b.key, track);
+      this.ignored(b.key).delete(track);
     }
     return ok({ status: 'ok' });
   }
@@ -343,6 +373,8 @@ export class UserDO extends DurableObject<Env> {
     }
     this.sql.exec('DELETE FROM matches WHERE album = ?', b.key);
     delete this.matches?.[b.key];
+    this.sql.exec('DELETE FROM ignored WHERE album = ?', b.key);
+    delete this.ignoredTracks?.[b.key];
     return ok({ status: 'ok' });
   }
 }
