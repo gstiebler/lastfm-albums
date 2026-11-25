@@ -63,5 +63,9 @@ async function route(req: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  fetch: (req, env) => route(req, env).catch((err: Error) => json({ status: 'error', message: err.message }, 500)),
+  fetch: (req, env) =>
+    route(req, env).catch((err: Error) => {
+      console.error('Request failed', { method: req.method, path: new URL(req.url).pathname, error: err.message, stack: err.stack });
+      return json({ status: 'error', message: err.message }, 500);
+    }),
 } satisfies ExportedHandler<Env>;

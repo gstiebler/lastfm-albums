@@ -145,6 +145,7 @@ export class UserDO extends DurableObject<Env> {
       if (this.get<Progress>('progress')!.phase === 'scrobbles') await (this.isLb() ? this.fetchListens(cfg) : this.fetchScrobbles(cfg));
       if (this.get<Progress>('progress')!.phase === 'albums') await this.fetchAlbums(cfg);
     } catch (err) {
+      console.error('Grid job failed', { user: this.get('user'), source: this.get('source'), progress: this.get('progress'), page: this.get('page'), error: (err as Error).message });
       this.set({ status: 'error', message: (err as Error).message, code: (err as LastfmError).code });
       return;
     }

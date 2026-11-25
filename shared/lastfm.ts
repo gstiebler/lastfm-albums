@@ -45,6 +45,8 @@ async function call(cfg: Config, method: string, params: Params, signed = false)
     const data: any = await res.json().catch(() => ({ error: res.status, message: `HTTP ${res.status}` }));
     if (!data.error) return data;
     if (attempt > RETRIES || !isTransient(data.error)) {
+      const { api_key, api_sig, sk, token, ...safe } = all; // never log credentials
+      console.error('Last.fm call failed', { method, params: safe, attempts: attempt, code: data.error, message: data.message });
       throw Object.assign(new Error(`Last.fm: ${data.message}`), { code: data.error });
     }
     await new Promise((r) => setTimeout(r, 2000 * attempt));

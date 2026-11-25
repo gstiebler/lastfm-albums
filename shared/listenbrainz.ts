@@ -16,6 +16,7 @@ async function get(cfg: Config, path: string): Promise<any> {
     const retry = res.status === 429 || res.status >= 500;
     if (attempt > RETRIES || !retry) {
       const body: any = await res.json().catch(() => ({}));
+      console.error('ListenBrainz call failed', { path, attempts: attempt, status: res.status, message: body.error });
       throw new Error(`ListenBrainz: ${body.error ?? `HTTP ${res.status}`}`);
     }
     await sleep(res.status === 429 ? Number(res.headers.get('X-RateLimit-Reset-In') ?? 1) * 1000 : 2000 * attempt);
