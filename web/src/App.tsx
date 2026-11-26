@@ -44,6 +44,18 @@ function artistRuns(albums: Album[]) {
   return runs;
 }
 
+// Split a recent-sorted list (pct desc) into consecutive 10% bands: 100%, 90–99%, …
+function pctRuns(albums: Album[]) {
+  const runs: { band: number; albums: Album[] }[] = [];
+  for (const a of albums) {
+    const band = Math.floor(Math.round(a.pct * 100) / 10) * 10;
+    const last = runs.at(-1);
+    if (last && last.band === band) last.albums.push(a);
+    else runs.push({ band, albums: [a] });
+  }
+  return runs;
+}
+
 export default function App() {
   const params = new URLSearchParams(location.search);
   const initial = params.get('user') ?? '';
@@ -181,6 +193,13 @@ export default function App() {
         ? <main id="grid">{artistRuns(albums).map((r) => (
             <section className="artist" key={r.albums[0].key}>
               <h2>{r.artist} · {r.songs} songs</h2>
+              <div className="grid">{r.albums.map(tile)}</div>
+            </section>
+          ))}</main>
+        : sort === 'recent'
+        ? <main id="grid">{pctRuns(albums).map((r) => (
+            <section className="artist" key={r.band}>
+              <h2>{r.band}% played · {r.albums.length} albums</h2>
               <div className="grid">{r.albums.map(tile)}</div>
             </section>
           ))}</main>
